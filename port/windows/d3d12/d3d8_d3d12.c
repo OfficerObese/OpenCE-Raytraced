@@ -39,6 +39,8 @@ there is a renderer texture here, by the same number.
 #include "xgpu_host.h"
 #include "xgpu_gl_textures.h"
 
+#include "zlib_prefixed.h"
+
 #include <SDL3/SDL.h>
 
 #include <math.h>
@@ -757,6 +759,105 @@ static void device_initialize(void)
 		anti_aliasing_prepare();
 }
 
+/* port/third_party/smaa, embedded by tools/embed_assets.py (as xgpu_post.c
+has them): the shader's text, ending in a NUL, and the lookup textures'
+bytes compressed with zlib; each size 0 where the build had no such file */
+extern const unsigned int xgpu_smaa_shader[];
+extern const unsigned long xgpu_smaa_shader_size;
+extern const unsigned int xgpu_smaa_area_texture[];
+extern const unsigned long xgpu_smaa_area_texture_size;
+extern const unsigned int xgpu_smaa_search_texture[];
+extern const unsigned long xgpu_smaa_search_texture_size;
+
+/* a lookup texture of SMAA's, inflated from its zlib stream and sent as an
+RGBA8 texture of its channels (the rest zero); 0 if it does not inflate */
+static unsigned long smaa_lookup_send(const unsigned int *stream, unsigned long stream_size, unsigned long width,
+	unsigned long height, unsigned long channels)
+{
+	uLongf size = (uLongf)(width * height * channels);
+	unsigned char *texels = malloc(size), *rgba = malloc(width * height * 4);
+	unsigned long number = 0, texel, channel;
+	int result;
+
+	if (texels && rgba)
+	{
+		result = uncompress(texels, &size, (const Bytef *)stream, (uLong)stream_size);
+		if ((result == Z_OK || result == Z_BUF_ERROR) && size == (uLongf)(width * height * channels))
+		{
+			struct xgpu_texture_define definition;
+			struct xgpu_texture_data data;
+
+			memset(rgba, 0, width * height * 4);
+			for (texel = 0; texel < width * height; texel++)
+			{
+				for (channel = 0; channel < channels; channel++)
+					rgba[texel * 4 + channel] = texels[texel * channels + channel];
+			}
+			number = xgpu_texture_number_new();
+			memset(&definition, 0, sizeof(definition));
+			definition.texture = number;
+			definition.dimension = _xgpu_texture_2d;
+			definition.format = _xgpu_format_rgba8;
+			definition.width = width;
+			definition.height = height;
+			definition.depth = 1;
+			definition.levels = 1;
+			definition.swizzle[0] = 0;
+			definition.swizzle[1] = 1;
+			definition.swizzle[2] = 2;
+			definition.swizzle[3] = 3;
+			xgpu_ring_send_data(_xgpu_op_texture_define, &definition, sizeof(definition), NULL, 0);
+			memset(&data, 0, sizeof(data));
+			data.texture = number;
+			data.width = width;
+			data.height = height;
+			data.depth = 1;
+			data.row_pitch = width * 4;
+			xgpu_ring_send_data(_xgpu_op_texture_data, &data, sizeof(data), rgba, width * height * 4);
+		}
+	}
+	free(texels);
+	free(rgba);
+	return number;
+}
+
+/* the renderer's passes for FXAA or SMAA made, as the setting is chosen
+rather than in the middle of a frame (SMAA's are large) */
+static void anti_aliasing_passes_send(int mode)
+{
+	static BOOL fxaa_sent, smaa_sent;
+	struct xgpu_anti_alias_prepare prepare;
+
+	memset(&prepare, 0, sizeof(prepare));
+	if (mode == _anti_aliasing_fxaa && !fxaa_sent)
+	{
+		fxaa_sent = TRUE;
+		prepare.mode = _xgpu_anti_alias_fxaa;
+		xgpu_ring_send_data(_xgpu_op_anti_alias_prepare, &prepare, sizeof(prepare), NULL, 0);
+	}
+	if (mode == _anti_aliasing_smaa && !smaa_sent)
+	{
+		smaa_sent = TRUE;
+		if (!xgpu_smaa_shader_size)
+		{
+			platform_log("anti-aliasing: the build has no SMAA");
+			return;
+		}
+		prepare.mode = _xgpu_anti_alias_smaa;
+		prepare.area_texture = (uint32_t)smaa_lookup_send(xgpu_smaa_area_texture, xgpu_smaa_area_texture_size,
+			160, 560, 2);
+		prepare.search_texture = (uint32_t)smaa_lookup_send(xgpu_smaa_search_texture, xgpu_smaa_search_texture_size,
+			64, 16, 1);
+		if (!prepare.area_texture || !prepare.search_texture)
+		{
+			platform_log("anti-aliasing: cannot inflate SMAA's lookup textures");
+			return;
+		}
+		xgpu_ring_send_data(_xgpu_op_anti_alias_prepare, &prepare, sizeof(prepare), xgpu_smaa_shader,
+			(unsigned long)strlen((const char *)xgpu_smaa_shader));
+	}
+}
+
 static void anti_aliasing_prepare(void)
 {
 	if (!device.ready || anti_aliasing_value < 0)
@@ -767,6 +868,7 @@ static void anti_aliasing_prepare(void)
 		platform_log("anti-aliasing: the GPU has at most %ld samples a pixel", anti_aliasing_maximum_samples);
 		anti_aliasing_samples = anti_aliasing_maximum_samples < 2 ? 0 : (int)anti_aliasing_maximum_samples;
 	}
+	anti_aliasing_passes_send(anti_aliasing_values[anti_aliasing_value].mode);
 }
 
 Direct3D *WINAPI Direct3DCreate8(UINT sdk_version)

@@ -4,7 +4,7 @@ RENDERER_OUTPUT.C
 The renderer's own passes and what leaves it: presentation (the back
 buffer's target drawn into the swap chain's buffer, letterboxed to the
 window, as d3d8_gl.c's display blit does), the blit that makes mip levels,
-clears of some channels only, the anti-aliasing passes, and screenshots,
+clears of some channels only, and screenshots,
 read back and written once the frame's work is done (BMP for
 debug.screenshot_every, PNG through WIC for the screenshot key).
 
@@ -227,18 +227,6 @@ void renderer_present(const struct xgpu_present *present)
 	renderer_screenshots_collect();
 	renderer_header->frames_completed = (uint32_t)renderer_completed();
 	renderer_draw_begin_frame();
-}
-
-void renderer_anti_alias(const struct xgpu_anti_alias *anti_alias)
-{
-	static BOOL logged;
-
-	(void)anti_alias;
-	if (!logged)
-	{
-		logged = TRUE;
-		renderer_log("FXAA and SMAA are not drawn yet: the 3D view is not antialiased");
-	}
 }
 
 /* ---------- screenshots */

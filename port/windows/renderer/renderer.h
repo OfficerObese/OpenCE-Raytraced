@@ -13,7 +13,8 @@ presents into the DirectComposition surface the game's window shows.
 	renderer_resources.c  textures, render targets, the mirror's buffers
 	renderer_pipeline.c   shader compilation, the root signature, pipelines
 	renderer_draw.c       draw state, draws, clears, visibility tests
-	renderer_output.c     presentation, anti-aliasing, screenshots
+	renderer_output.c     presentation, its own passes, screenshots
+	renderer_post.c       anti-aliasing (FXAA, SMAA)
 
 One thread does everything; nothing here is called from elsewhere.
 */
@@ -234,6 +235,7 @@ void renderer_clear_channels(D3D12_CPU_DESCRIPTOR_HANDLE target, uint32_t sample
 	const D3D12_RECT *rectangles, uint32_t count, const float color[4], uint32_t mask);
 void renderer_present(const struct xgpu_present *present);
 void renderer_anti_alias(const struct xgpu_anti_alias *anti_alias);
+void renderer_anti_alias_prepare(const struct xgpu_anti_alias_prepare *prepare, const char *smaa, uint32_t length);
 void renderer_screenshot(const struct xgpu_screenshot *screenshot);
 /* screenshots of finished frames, written */
 void renderer_screenshots_collect(void);

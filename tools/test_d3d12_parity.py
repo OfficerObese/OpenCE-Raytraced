@@ -67,6 +67,25 @@ SCENES = {
     "c40": ("c40", EXACT),
     "d20": ("d20", EXACT),
     "d40": ("d40", EXACT),
+    # the settings that change how the renderer draws, each on a level that
+    # shows it (SETTINGS)
+    "d40_msaa": ("d40", EXACT),
+    "c40_ssaa": ("c40", EXACT),
+    "d20_fxaa": ("d20", EXACT),
+    "c20_smaa": ("c20", EXACT),
+    "d40_lit": ("d40", EXACT),
+}
+# scenes compared at full size, with their floors: anti-aliasing changes the
+# pixels of edges, which averaging hides (two runs of the OpenGL build: FXAA
+# 46.8 dB, SMAA 55.0; the D3D12 build without the passes: 41.8, 50.8)
+FULL_SIZE = {"d20_fxaa": 44.0, "c20_smaa": 53.0}
+# the settings of those scenes
+SETTINGS = {
+    "d40_msaa": {"HALO_ANTI_ALIASING": "msaa4x"},
+    "c40_ssaa": {"HALO_ANTI_ALIASING": "ssaa2x"},
+    "d20_fxaa": {"HALO_ANTI_ALIASING": "fxaa"},
+    "c20_smaa": {"HALO_ANTI_ALIASING": "smaa"},
+    "d40_lit": {"HALO_PER_PIXEL_LIGHTING": "true"},
 }
 # scenes run at once
 JOBS = 3
@@ -125,6 +144,7 @@ def run_scene(exe, game, name):
         # (the D3D12 build's renderer log, with the scene's)
         "HALO_RENDERER_LOG": str(data_root / "renderer.txt"),
     })
+    environment.update(SETTINGS.get(name, {}))
     if level:
         # (exit_after only in case the scene never comes)
         environment.update({"HALO_EXIT_AFTER": "120"})
@@ -207,10 +227,14 @@ def main():
         full = psnr(expected, drawn)
         value = psnr(expected.reduce(DOWNSCALE), drawn.reduce(DOWNSCALE)) if expected.size == drawn.size else 0.0
         floor = SCENES[name][1] if arguments.floor is None else arguments.floor
+        if name in FULL_SIZE and arguments.floor is None:
+            floor = FULL_SIZE[name]
+            value = full
         passed = value >= floor
         failures += not passed
-        print(f"{name}: {value:.1f} dB at 1/{DOWNSCALE} scale ({full:.1f} dB full size) "
-              f"{'passed' if passed else 'FAILED'} (floor {floor:.0f}, {frame})")
+        measure = "full size" if name in FULL_SIZE and arguments.floor is None else \
+            f"at 1/{DOWNSCALE} scale ({full:.1f} dB full size)"
+        print(f"{name}: {value:.1f} dB {measure} {'passed' if passed else 'FAILED'} (floor {floor:.0f}, {frame})")
     if arguments.mode == "compare":
         print("passed" if not failures else f"FAILED: {failures} of {len(scenes)} scenes")
     return 1 if failures else 0

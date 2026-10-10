@@ -211,6 +211,11 @@ static BOOL message_handle(uint32_t opcode, const uint8_t *data, uint32_t size)
 		EXACTLY(struct xgpu_anti_alias);
 		renderer_anti_alias((const void *)data);
 		break;
+	case _xgpu_op_anti_alias_prepare:
+		NEEDS(struct xgpu_anti_alias_prepare);
+		renderer_anti_alias_prepare((const void *)data, (const char *)data + sizeof(struct xgpu_anti_alias_prepare),
+			size - (uint32_t)sizeof(struct xgpu_anti_alias_prepare));
+		break;
 	case _xgpu_op_present:
 		EXACTLY(struct xgpu_present);
 		renderer_present((const void *)data);

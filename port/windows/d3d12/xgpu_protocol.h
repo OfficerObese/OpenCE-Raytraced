@@ -147,6 +147,9 @@ enum xgpu_opcode
 	_xgpu_op_present,
 	_xgpu_op_screenshot,
 	_xgpu_op_quit,
+	/* struct xgpu_anti_alias_prepare and SMAA.hlsl's text: the passes of
+	_xgpu_op_anti_alias made before they are first drawn */
+	_xgpu_op_anti_alias_prepare,
 	/* reserved for the path tracer: the scene in world space */
 	_xgpu_op_scene_begin_map = 64,
 	_xgpu_op_scene_mesh,
@@ -463,6 +466,17 @@ enum
 {
 	_xgpu_anti_alias_fxaa = 1,
 	_xgpu_anti_alias_smaa,
+};
+
+/* SMAA's lookup textures (already sent, as RGBA8 textures of their texels:
+the area's in red and green, the search's in red) */
+struct xgpu_anti_alias_prepare
+{
+	uint32_t mode;
+	uint32_t area_texture;
+	uint32_t search_texture;
+	uint32_t reserved;
+	/* followed by SMAA.hlsl, without its terminating zero */
 };
 
 struct xgpu_anti_alias
