@@ -144,7 +144,22 @@ def _load_config() -> Dict[str, Any]:
 
 def windows_configure_inputs() -> List[Path]:
     """Files whose change must re-run configure.py."""
-    return [Path(__file__), PORT_CONFIG, PORT_DIR / "src", LINUX_DIR / "src", LINUX_DIR / "game", *hud_configure_inputs()]
+    return [Path(__file__), PORT_CONFIG, PORT_DIR / "src", PORT_DIR / "d3d12", PORT_DIR / "renderer", LINUX_DIR / "src",
+            LINUX_DIR / "game", *hud_configure_inputs()]
+
+
+# The Direct3D 12 renderer (configure.py --windows-renderer d3d12): the
+# game's side of it (port/windows/d3d12), built into halo.exe in place of the
+# OpenGL device and its GL entry points, and the renderer process
+# (port/windows/renderer), 64-bit, halo_renderer.exe.
+D3D12_DIR = PORT_DIR / "d3d12"
+RENDERER_DIR = PORT_DIR / "renderer"
+D3D12_REPLACED_SOURCES = {"d3d8_gl.c", "gl_functions.c", "xgpu_post.c"}
+RENDERER_LIBRARIES = ["d3d12", "dxgi", "dxguid", "d3dcompiler", "windowscodecs", "ole32", "user32"]
+
+
+def windows_d3d12(sln: Any) -> bool:
+    return getattr(sln, "windows_renderer", "opengl") == "d3d12"
 
 
 def _quote(path: Any) -> str:
@@ -327,9 +342,11 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + configuration_defines(sln)
                    + ([] if getattr(sln, "port_release", False) else ["-fstack-protector-strong"]))
     sdl_include = SDL_DIR / "include"
+    d3d12 = windows_d3d12(sln)
     libs = " ".join(
         [_quote(SDL_DIR / "lib" / "x86" / "SDL3.lib")]
         + [f"-l{lib}" for lib in config.get("libraries", [])]
+        + (["-ldcomp"] if d3d12 else [])
     )
     base_ldflags = [
         "--target=i686-pc-windows-msvc",
@@ -414,6 +431,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             "-Isource -Isource/cseries",
             f"-I{_quote(sdl_include)}",
             f"-I{XDK_INCLUDE}",
+            *([f"-DHALO_D3D12 -I{D3D12_DIR}"] if d3d12 else []),
         ])
         win32_cflags = " ".join([
             abi,
@@ -423,6 +441,17 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             f"-I{_quote(sdl_include)}",
         ])
         replaced = set(config.get("replaced_platform_sources", []))
+        if d3d12:
+            replaced |= D3D12_REPLACED_SOURCES
+            # the game's side of the renderer: as port/windows/src, win32_*
+            # with the Windows SDK and the rest with the Xbox SDK's names
+            for source in sorted(D3D12_DIR.glob("*.c")):
+                add_object(source, f"{win32_cflags} -I{D3D12_DIR}" if source.name.startswith("win32_")
+                           else platform_cflags)
+            # (C++: dcomp.h has no C interface)
+            for source in sorted(D3D12_DIR.glob("*.cpp")):
+                add_object(source, " ".join([abi, "-std=c++17", "-DWIN32_LEAN_AND_MEAN", "-DNOMINMAX",
+                                             "-D_WIN32_WINNT=0x0A00", "-Wall", f"-I{D3D12_DIR}"]))
         for source in sorted(linux_platform.glob("*.c")):
             if source.name in replaced:
                 continue
@@ -534,5 +563,32 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     # internet play's MQTT brokers, a file beside the game (network.brokers_file)
     brokers = BUILD / "brokers.txt"
     n.build(outputs=brokers, rule="windows_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll, brokers])
+    outputs = [output, sdl_dll, brokers]
+    if d3d12:
+        outputs.append(renderer_build(n, sln))
+    n.build(outputs="windows", rule="phony", inputs=outputs)
     n.newline()
+
+
+def renderer_build(n: Writer, sln: Any) -> Path:
+    """the D3D12 renderer process, 64-bit: build/windows/halo_renderer.exe"""
+    obj_dir = BUILD / "renderer_obj"
+    output = BUILD / "halo_renderer.exe"
+    cflags = " ".join([
+        "--target=x86_64-pc-windows-msvc", "-std=gnu11", OPTIMISATION, "-g", "-gcodeview", "-Wall",
+        "-Wno-unused-function", "-D_CRT_SECURE_NO_WARNINGS",
+    ])
+    objects: List[Path] = []
+    headers = sorted(RENDERER_DIR.glob("*.h")) + [D3D12_DIR / "xgpu_protocol.h", D3D12_DIR / "xgpu_hlsl.h"]
+    for source in sorted(RENDERER_DIR.glob("*.c")):
+        obj = obj_dir / source.with_suffix(".o").name
+        objects.append(obj)
+        n.build(outputs=obj, rule="windows_cc", inputs=source, implicit=headers, variables={"cflags": cflags})
+    ldflags = ["--target=x86_64-pc-windows-msvc", "-fuse-ld=lld", "-g"]
+    if getattr(sln, "port_release", False):
+        ldflags += ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
+    else:
+        ldflags += ["-Wl,/SUBSYSTEM:CONSOLE"]
+    n.build(outputs=output, rule="windows_link", inputs=objects,
+            variables={"ldflags": " ".join(ldflags), "libs": " ".join(f"-l{lib}" for lib in RENDERER_LIBRARIES)})
+    return output

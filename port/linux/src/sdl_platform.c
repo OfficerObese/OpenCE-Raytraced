@@ -16,6 +16,11 @@ and the debug keyboard that the game's console reads.
 #include "p2p.h"
 #include "xiso.h"
 #include "touch_input.h"
+#ifdef HALO_D3D12
+/* the Windows build that draws with Direct3D 12, in a process of its own
+(port/windows/d3d12): the window has no OpenGL context */
+#include "xgpu_host.h"
+#endif
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -766,6 +771,7 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	if (!platform_sdl_initialize())
 		return FALSE;
 
+#ifndef HALO_D3D12
 #ifdef HALO_GLES
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -787,6 +793,7 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	explicit mesa_glthread setting alone and other drivers ignore it. */
 	setenv("mesa_glthread", "true", 0);
 #endif
+#endif
 
 #ifdef HALO_ANDROID
 	{
@@ -806,7 +813,10 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	(void)height;
 	platform_window_size_setting(&platform_window_width, &platform_window_height);
 	platform_window = SDL_CreateWindow("Halo", (int)platform_window_width, (int)platform_window_height,
-		SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+#ifndef HALO_D3D12
+		SDL_WINDOW_OPENGL |
+#endif
+		SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
 		(config_boolean("debug.hidden_window") ? SDL_WINDOW_HIDDEN : 0) |
 		(platform_fullscreen_setting() ? SDL_WINDOW_FULLSCREEN : 0));
 #endif
@@ -829,6 +839,28 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	platform_fullscreen_requested = platform_fullscreen_setting();
 	platform_fullscreen_kind_apply();
 #endif
+#ifdef HALO_D3D12
+	{
+		char error[512];
+		int pixel_width = 0, pixel_height = 0;
+		void *window = SDL_GetPointerProperty(SDL_GetWindowProperties(platform_window),
+			SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+
+		SDL_GetWindowSizeInPixels(platform_window, &pixel_width, &pixel_height);
+		error[0] = '\0';
+		if (!window || !xgpu_host_start(window, (unsigned long)pixel_width, (unsigned long)pixel_height, error,
+			sizeof(error)))
+		{
+			platform_log("cannot start the renderer: %s", error);
+			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Halo", error, platform_window);
+			return FALSE;
+		}
+		(void)version;
+		platform_event_thread = SDL_GetCurrentThreadID();
+		platform_mouse_capture(TRUE);
+		return TRUE;
+	}
+#else
 	platform_gl_context = SDL_GL_CreateContext(platform_window);
 #ifdef HALO_GLES
 	/* ES 3.2 where the driver has it, otherwise the renderer makes do with
@@ -855,6 +887,7 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	platform_mouse_capture(TRUE);
 #endif
 	return TRUE;
+#endif
 }
 
 /* display.mode, display.resolution (fullscreen's display mode),
@@ -884,7 +917,9 @@ void platform_display_apply(void)
 	if (!platform_window)
 		return;
 #endif
+#ifndef HALO_D3D12
 	SDL_GL_SetSwapInterval(config_boolean("display.vsync") ? 1 : 0);
+#endif
 }
 
 void platform_video_drawable_size(int *width, int *height)
@@ -931,7 +966,10 @@ void platform_video_swap(void)
 	Uint64 interval, now;
 
 #endif
+	/* (with Direct3D 12 the renderer presents, at its own pace: d3d8_d3d12.c) */
+#ifndef HALO_D3D12
 	SDL_GL_SwapWindow(platform_window);
+#endif
 #ifndef HALO_ANDROID
 	interval = frame_interval_ns();
 	if (!interval)
