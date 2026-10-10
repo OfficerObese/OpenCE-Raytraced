@@ -638,6 +638,18 @@ void test_input_hold_action(int hold)
 	test_input_holding_action = hold;
 }
 
+/* debug.scene_test (port/linux/game/scene_test.c): the renderer comparison's
+scenes take no input from the person at the computer (a mouse moved over the
+window would turn the view), so that every run draws the same frame */
+static BOOL scene_test_ignores_input(void)
+{
+	static int ignores = -1;
+
+	if (ignores < 0)
+		ignores = config_integer("debug.scene_test") > 0;
+	return ignores;
+}
+
 static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 {
 	static int checked;
@@ -975,6 +987,12 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 		BOOL console_active;
 
 		platform_input_read(&input, TRUE);
+		if (scene_test_ignores_input())
+		{
+			memset(input.keys, 0, sizeof(input.keys));
+			memset(input.mouse_buttons, 0, sizeof(input.mouse_buttons));
+			input.mouse_dx = input.mouse_dy = input.mouse_wheel = 0.0f;
+		}
 		mouse_poll(&input);
 		wheel_update();
 		keyboard_actions_held = 0;
@@ -1008,6 +1026,8 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 	{
 		sdl_gamepad_state(port_gamepad(gamepads, count, port), &state->Gamepad);
 	}
+	if (scene_test_ignores_input())
+		memset(&state->Gamepad, 0, sizeof(state->Gamepad));
 
 	if (memcmp(&state->Gamepad, &controllers[port].previous, sizeof(state->Gamepad)))
 	{

@@ -526,6 +526,10 @@ static const struct config_setting config_settings[] =
 		"A folder to save frames to (with screenshot_every); empty none." },
 	{ "debug.screenshot_every", _config_integer, "0", "HALO_SCREENSHOT_EVERY", _environment_value, _platform_all,
 		"Save every this many frames to screenshot_directory; 0 none." },
+	{ "debug.scene_test", _config_integer, "0", "HALO_SCENE_TEST", _environment_value, _platform_all,
+		"Renderer comparison scenes (port/linux/game/scene_test.c): skip each\n"
+		"cinematic, and this many ticks after the player has control save a\n"
+		"screenshot and exit, ignoring the mouse, keyboard and gamepads; 0 off." },
 	{ "debug.texture_dump_directory", _config_string, "\"\"", "HALO_TEXTURE_DUMP", _environment_value, _platform_all,
 		"A folder to write every texture to as it is uploaded; empty none." },
 	{ "debug.texture_log", _config_boolean, "false", "HALO_TEXTURE_LOG", _environment_set_is_true, _platform_all,
