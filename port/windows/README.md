@@ -136,12 +136,27 @@ to the file that the environment variable `HALO_RENDERER_LOG` gives). The
 setting `debug.d3d12_debug_layer` turns on the D3D12 debug layer, which
 writes its errors and warnings to that log.
 
+When something goes wrong with the renderer:
+
+- **The GPU is lost.** The driver can reset the GPU after a hang, or the
+  driver can be updated while the game runs. The renderer then makes its
+  device again and restores all the textures, the render targets and the
+  copy of the contiguous memory. It keeps a copy of each in its own memory
+  for this. The frame being drawn is lost, and the game plays on. The log of
+  the game says `the renderer lost the GPU and made it again`. The setting
+  `debug.scene_test_device_reset` tests this.
+- **The renderer crashes.** It writes `halo_renderer.dmp` (a minidump) next
+  to its log. The game then shows the error and stops.
+- **The renderer stops.** If the renderer exits, or draws no frame for 30
+  seconds, the game shows the reason and stops.
+- **The renderer cannot start.** The game shows the reason and stops.
+
 Three tests compare the renderer with the OpenGL build. They need the game
 data:
 
 | Test | What it does |
 | --- | --- |
-| `python tools/test_d3d12_parity.py compare --game <folder>` | Plays fixed scenes (the main menu, five levels, and each setting that changes the drawing: MSAA, SSAA, FXAA, SMAA, lighting for each pixel) and compares each frame with the frame of the OpenGL build (`record` makes those frames, with `--exe` an OpenGL build). The game skips the cutscenes, ignores the mouse and the keyboard, plays no sound and uses no internet play (`debug.scene_test`). |
+| `python tools/test_d3d12_parity.py compare --game <folder>` | Plays fixed scenes (the main menu, five levels, each setting that changes the drawing: MSAA, SSAA, FXAA, SMAA, lighting for each pixel, and two scenes where the renderer loses its GPU device) and compares each frame with the frame of the OpenGL build (`record` makes those frames, with `--exe` an OpenGL build). The game skips the cutscenes, ignores the mouse and the keyboard, plays no sound and uses no internet play (`debug.scene_test`). |
 | `python tools/test_hlsl_shaders.py` | Changes the GLSL of each shader that the game made (`debug.gpu_dump_shaders`) to HLSL and compiles it. |
 | `python tools/test_d3d12_performance.py --game <folder>` | Counts the frames that each build draws each second, with no vsync and no limit. |
 

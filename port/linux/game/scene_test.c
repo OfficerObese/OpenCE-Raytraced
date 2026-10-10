@@ -12,6 +12,11 @@ saves the same moment of the game however fast it draws; with
 display.interpolation false the frame is that tick's. The game ignores the
 mouse, keyboard and gamepads meanwhile (xinput_sdl.c), in the menus too.
 
+With debug.scene_test_device_reset, that many ticks after the player has
+control (before the screenshot) the renderer is told to lose its GPU device,
+a test of its recovery: the D3D12 renderer makes the device again and
+restores everything, so the screenshot is as it would be without.
+
 Called from the main loop every frame, by network_test_update.
 */
 
@@ -28,10 +33,15 @@ long config_integer(char const *name);
 void platform_log(char const *format, ...);
 void platform_screenshot_request(void);
 
+/* set by a renderer that can lose its device on request (d3d8_d3d12.c) */
+void (*scene_test_device_reset)(void);
+
 static struct
 {
 	boolean checked;
 	long ticks;
+	long reset_ticks;
+	boolean reset_done;
 	boolean skipping;
 	/* the game time the player took control, NONE before */
 	long control_time;
@@ -49,6 +59,7 @@ void scene_test_update(
 	{
 		scene_test.checked = TRUE;
 		scene_test.ticks = config_integer("debug.scene_test");
+		scene_test.reset_ticks = config_integer("debug.scene_test_device_reset");
 		scene_test.control_time = NONE;
 		scene_test.screenshot_time = NONE;
 	}
@@ -85,6 +96,19 @@ void scene_test_update(
 	{
 		scene_test.control_time = now;
 		platform_log("scene test: the player has control at tick %ld", now);
+	}
+	if (scene_test.reset_ticks > 0 && !scene_test.reset_done && now - scene_test.control_time >= scene_test.reset_ticks)
+	{
+		scene_test.reset_done = TRUE;
+		if (scene_test_device_reset)
+		{
+			platform_log("scene test: the renderer loses its device at tick %ld", now);
+			scene_test_device_reset();
+		}
+		else
+		{
+			platform_log("scene test: this renderer cannot lose its device");
+		}
 	}
 	if (scene_test.screenshot_time == NONE && now - scene_test.control_time >= scene_test.ticks)
 	{

@@ -21,5 +21,8 @@ void xgpu_ring_send_data(unsigned long opcode, const void *head, unsigned long h
 	unsigned long data_size);
 /* wakes the renderer for what has been sent (each frame's end) */
 void xgpu_ring_flush(void);
+/* the renderer has ended or stopped answering: the game ends, with its
+reason in the log and a box (reason NULL: the renderer's own) */
+void xgpu_ring_renderer_stopped(const char *reason) __attribute__((noreturn));
 
 #endif

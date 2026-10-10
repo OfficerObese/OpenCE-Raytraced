@@ -27,8 +27,9 @@ int xgpu_host_wait_space(unsigned long milliseconds);
 /* the game has written messages */
 void xgpu_host_signal_data(void);
 /* waits until the renderer can take another frame (at most
-XGPU_FRAMES_IN_FLIGHT behind); FALSE if the renderer has ended */
-int xgpu_host_wait_frame(void);
+XGPU_FRAMES_IN_FLIGHT behind): 1; 0 if the renderer has ended, -1 if it has
+not taken one in the milliseconds given */
+int xgpu_host_wait_frame(unsigned long milliseconds);
 /* the renderer has ended: its exit code, or -1 while it runs */
 long xgpu_host_exit_code(void);
 /* tells the renderer to finish (the caller has sent _xgpu_op_quit) and

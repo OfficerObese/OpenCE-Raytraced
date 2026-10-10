@@ -729,3 +729,36 @@ void renderer_draw_initialize(void)
 		sampler_get(&defaults);
 	}
 }
+
+/* ---------- a lost device: the draw state is kept (the game sends only what
+changes), the device's objects made again; visibility tests in flight are
+lost, and the game reads their last counts */
+
+void renderer_draw_lost(void)
+{
+	uint32_t index;
+
+	if (query_heap)
+		ID3D12QueryHeap_Release(query_heap);
+	query_heap = NULL;
+	for (index = 0; index < RENDERER_FRAME_COUNT; index++)
+	{
+		if (batches[index].readback)
+			ID3D12Resource_Release(batches[index].readback);
+	}
+	memset(batches, 0, sizeof(batches));
+	batch_current = 0;
+	renderer_visibility_active = FALSE;
+	if (feedback.resource)
+		ID3D12Resource_Release(feedback.resource);
+	memset(&feedback, 0, sizeof(feedback));
+	memset(sampler_table, 0, sizeof(sampler_table));
+	sampler_count = 0;
+	renderer_draw_invalidate();
+}
+
+void renderer_draw_restore(void)
+{
+	renderer_draw_initialize();
+	renderer_draw_invalidate();
+}

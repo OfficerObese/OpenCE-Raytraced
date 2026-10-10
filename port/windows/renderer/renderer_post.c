@@ -187,10 +187,25 @@ enum
 	NUMBER_OF_PASSES
 };
 
+/* each pass's target format, and the channels it writes (only colour into
+the game's target) */
+static const DXGI_FORMAT pass_formats[NUMBER_OF_PASSES] =
+{
+	DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM,
+};
+#define COLOR_ONLY (D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE)
+static const uint8_t pass_write_masks[NUMBER_OF_PASSES] =
+{
+	COLOR_ONLY, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COLOR_WRITE_ENABLE_ALL, COLOR_ONLY,
+};
+
 static struct
 {
 	ID3D12RootSignature *signature;
 	ID3DBlob *vertex;
+	/* the passes' compiled pixel shaders, kept to make their pipelines again
+	on a new device */
+	ID3DBlob *pixels[NUMBER_OF_PASSES];
 	ID3D12PipelineState *pipelines[NUMBER_OF_PASSES];
 	BOOL fxaa_failed, smaa_failed, smaa_ready;
 	uint32_t area_texture, search_texture;
@@ -253,8 +268,9 @@ static void signature_create(void)
 }
 
 /* a pass's pipeline from its pixel shader; NULL if it does not build */
-static ID3D12PipelineState *pass_pipeline(ID3DBlob *pixel, DXGI_FORMAT format, uint8_t write_mask)
+static ID3D12PipelineState *pass_pipeline(int which)
 {
+	ID3DBlob *pixel = post.pixels[which];
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC description;
 	ID3D12PipelineState *pipeline = NULL;
 
@@ -264,7 +280,7 @@ static ID3D12PipelineState *pass_pipeline(ID3DBlob *pixel, DXGI_FORMAT format, u
 	description.VS.BytecodeLength = ID3D10Blob_GetBufferSize(post.vertex);
 	description.PS.pShaderBytecode = ID3D10Blob_GetBufferPointer(pixel);
 	description.PS.BytecodeLength = ID3D10Blob_GetBufferSize(pixel);
-	description.BlendState.RenderTarget[0].RenderTargetWriteMask = write_mask;
+	description.BlendState.RenderTarget[0].RenderTargetWriteMask = pass_write_masks[which];
 	description.BlendState.RenderTarget[0].SrcBlend = description.BlendState.RenderTarget[0].SrcBlendAlpha =
 		D3D12_BLEND_ONE;
 	description.BlendState.RenderTarget[0].DestBlend = description.BlendState.RenderTarget[0].DestBlendAlpha =
@@ -277,7 +293,7 @@ static ID3D12PipelineState *pass_pipeline(ID3DBlob *pixel, DXGI_FORMAT format, u
 	description.RasterizerState.DepthClipEnable = TRUE;
 	description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	description.NumRenderTargets = 1;
-	description.RTVFormats[0] = format;
+	description.RTVFormats[0] = pass_formats[which];
 	description.SampleDesc.Count = 1;
 	if (FAILED(ID3D12Device_CreateGraphicsPipelineState(renderer.device, &description, &IID_ID3D12PipelineState,
 		(void **)&pipeline)))
@@ -319,7 +335,6 @@ static BOOL fxaa_prepare(void)
 {
 	const char *parts[2];
 	char *text;
-	ID3DBlob *pixel;
 
 	post_initialize();
 	if (post.pipelines[_pass_fxaa] || post.fxaa_failed)
@@ -327,14 +342,10 @@ static BOOL fxaa_prepare(void)
 	parts[0] = post_common;
 	parts[1] = fxaa_source;
 	text = joined(parts, 2);
-	pixel = renderer_compile(text, "fxaa", "ps_5_0", "FXAA");
+	post.pixels[_pass_fxaa] = renderer_compile(text, "fxaa", "ps_5_0", "FXAA");
 	free(text);
-	if (pixel)
-	{
-		post.pipelines[_pass_fxaa] = pass_pipeline(pixel, DXGI_FORMAT_B8G8R8A8_UNORM,
-			D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE);
-		ID3D10Blob_Release(pixel);
-	}
+	if (post.pixels[_pass_fxaa])
+		post.pipelines[_pass_fxaa] = pass_pipeline(_pass_fxaa);
 	post.fxaa_failed = !post.pipelines[_pass_fxaa];
 	if (post.fxaa_failed)
 		renderer_log("anti-aliasing: FXAA does not build, so the 3D view is not antialiased");
@@ -344,10 +355,6 @@ static BOOL fxaa_prepare(void)
 void renderer_anti_alias_prepare(const struct xgpu_anti_alias_prepare *prepare, const char *smaa, uint32_t length)
 {
 	static const char *const entries[3] = { "smaa_edges", "smaa_weights", "smaa_blend" };
-	static const DXGI_FORMAT formats[3] =
-	{
-		DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM,
-	};
 	char *source, *text;
 	const char *parts[4];
 	int pass;
@@ -375,15 +382,9 @@ void renderer_anti_alias_prepare(const struct xgpu_anti_alias_prepare *prepare, 
 	free(source);
 	for (pass = 0; pass < 3; pass++)
 	{
-		ID3DBlob *pixel = renderer_compile(text, entries[pass], "ps_5_0", entries[pass]);
-
-		if (pixel)
-		{
-			post.pipelines[_pass_smaa_edges + pass] = pass_pipeline(pixel, formats[pass], pass == 2 ?
-				D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE :
-				D3D12_COLOR_WRITE_ENABLE_ALL);
-			ID3D10Blob_Release(pixel);
-		}
+		post.pixels[_pass_smaa_edges + pass] = renderer_compile(text, entries[pass], "ps_5_0", entries[pass]);
+		if (post.pixels[_pass_smaa_edges + pass])
+			post.pipelines[_pass_smaa_edges + pass] = pass_pipeline(_pass_smaa_edges + pass);
 		if (!post.pipelines[_pass_smaa_edges + pass])
 		{
 			post.smaa_failed = TRUE;
@@ -557,4 +558,50 @@ void renderer_anti_alias(const struct xgpu_anti_alias *anti_alias)
 		pass_draw(_pass_smaa_blend, target->view.cpu, rectangle, post.color_srv.gpu, post.weights_srv.gpu, none);
 	}
 	renderer_draw_invalidate();
+}
+
+/* ---------- a lost device: the compiled shaders are kept, the signature,
+pipelines and textures made again (the textures as the next pass needs them) */
+
+void renderer_post_lost(void)
+{
+	int which;
+
+	if (post.signature)
+		ID3D12RootSignature_Release(post.signature);
+	post.signature = NULL;
+	for (which = 0; which < NUMBER_OF_PASSES; which++)
+	{
+		if (post.pipelines[which])
+			ID3D12PipelineState_Release(post.pipelines[which]);
+		post.pipelines[which] = NULL;
+	}
+	if (post.color)
+		ID3D12Resource_Release(post.color);
+	if (post.edges)
+		ID3D12Resource_Release(post.edges);
+	if (post.weights)
+		ID3D12Resource_Release(post.weights);
+	post.color = post.edges = post.weights = NULL;
+	post.width = post.height = 0;
+	memset(&post.color_srv, 0, sizeof(post.color_srv));
+	memset(&post.edges_srv, 0, sizeof(post.edges_srv));
+	memset(&post.weights_srv, 0, sizeof(post.weights_srv));
+	memset(&post.edges_rtv, 0, sizeof(post.edges_rtv));
+	memset(&post.weights_rtv, 0, sizeof(post.weights_rtv));
+}
+
+void renderer_post_restore(void)
+{
+	int which;
+
+	/* (nothing made yet: the passes were never used) */
+	if (!post.vertex)
+		return;
+	signature_create();
+	for (which = 0; which < NUMBER_OF_PASSES; which++)
+	{
+		if (post.pixels[which])
+			post.pipelines[which] = pass_pipeline(which);
+	}
 }

@@ -272,6 +272,8 @@ struct pipeline_entry
 #define PIPELINE_BUCKETS 4096
 
 static struct pipeline_entry *pipeline_buckets[PIPELINE_BUCKETS];
+/* the pipeline found last (draws often repeat it) */
+static struct pipeline_entry *pipeline_last;
 
 static void pipeline_key_make(const struct xgpu_draw_state *state, BOOL color, BOOL depth, struct pipeline_key *key)
 {
@@ -442,7 +444,6 @@ static ID3D12PipelineState *pipeline_create(const struct pipeline_key *key)
 
 ID3D12PipelineState *renderer_pipeline_get(const struct xgpu_draw_state *state, BOOL color, BOOL depth)
 {
-	static struct pipeline_entry *last;
 	struct pipeline_key key;
 	struct pipeline_entry **bucket, *entry;
 	const uint8_t *bytes;
@@ -455,8 +456,8 @@ ID3D12PipelineState *renderer_pipeline_get(const struct xgpu_draw_state *state, 
 		return NULL;
 	}
 	pipeline_key_make(state, color, depth, &key);
-	if (last && !memcmp(&last->key, &key, sizeof(key)))
-		return last->pipeline;
+	if (pipeline_last && !memcmp(&pipeline_last->key, &key, sizeof(key)))
+		return pipeline_last->pipeline;
 	bytes = (const uint8_t *)&key;
 	for (index = 0; index < sizeof(key); index++)
 		hash = (hash ^ bytes[index]) * 16777619u;
@@ -465,7 +466,7 @@ ID3D12PipelineState *renderer_pipeline_get(const struct xgpu_draw_state *state, 
 	{
 		if (entry->hash == hash && !memcmp(&entry->key, &key, sizeof(key)))
 		{
-			last = entry;
+			pipeline_last = entry;
 			return entry->pipeline;
 		}
 	}
@@ -477,11 +478,44 @@ ID3D12PipelineState *renderer_pipeline_get(const struct xgpu_draw_state *state, 
 	entry->pipeline = pipeline_create(&key);
 	entry->next = *bucket;
 	*bucket = entry;
-	last = entry;
+	pipeline_last = entry;
 	return entry->pipeline;
 }
 
 void renderer_pipeline_initialize(void)
+{
+	root_signature_create();
+}
+
+/* ---------- a lost device: the compiled shaders are kept (their code is the
+device's to translate), the pipelines made again as draws use them */
+
+void renderer_pipeline_lost(void)
+{
+	int index;
+
+	for (index = 0; index < PIPELINE_BUCKETS; index++)
+	{
+		struct pipeline_entry *entry = pipeline_buckets[index];
+
+		while (entry)
+		{
+			struct pipeline_entry *next = entry->next;
+
+			if (entry->pipeline)
+				ID3D12PipelineState_Release(entry->pipeline);
+			free(entry);
+			entry = next;
+		}
+		pipeline_buckets[index] = NULL;
+	}
+	pipeline_last = NULL;
+	if (root_signature)
+		ID3D12RootSignature_Release(root_signature);
+	root_signature = NULL;
+}
+
+void renderer_pipeline_restore(void)
 {
 	root_signature_create();
 }

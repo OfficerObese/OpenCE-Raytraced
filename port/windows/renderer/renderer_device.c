@@ -16,7 +16,7 @@ last submission that could use it.
 #include <stdlib.h>
 #include <string.h>
 
-struct renderer_device renderer;
+struct renderer_device renderer = { .vsync = TRUE };
 
 /* with the debug layer, its messages, written to the log as they come */
 static ID3D12InfoQueue *info_queue;
@@ -421,7 +421,12 @@ static void list_begin(void)
 
 uint64_t renderer_completed(void)
 {
-	return ID3D12Fence_GetCompletedValue(renderer.fence);
+	uint64_t completed = ID3D12Fence_GetCompletedValue(renderer.fence);
+
+	/* (a lost device's fence reads as all ones: its work is not done) */
+	if (completed == UINT64_MAX)
+		renderer_device_lost(ID3D12Device_GetDeviceRemovedReason(renderer.device));
+	return completed;
 }
 
 void renderer_wait(uint64_t value)
@@ -433,9 +438,15 @@ void renderer_wait(uint64_t value)
 		{
 			HRESULT reason = ID3D12Device_GetDeviceRemovedReason(renderer.device);
 
-			renderer_fail("the GPU did not finish its work in 10 seconds (device: 0x%08lX)", (unsigned long)reason);
+			/* (a GPU that was reset: made again; one that only takes long:
+			the game cannot go on) */
+			if (FAILED(reason))
+				renderer_device_lost(reason);
+			renderer_fail("the GPU did not finish its work in 10 seconds");
 		}
 	}
+	/* (and not by a device that was lost meanwhile) */
+	renderer_completed();
 }
 
 uint64_t renderer_submit(void)
@@ -459,6 +470,9 @@ uint64_t renderer_submit(void)
 		renderer_wait(renderer.fence_value);
 		ID3D12CommandAllocator_Release(renderer.allocator);
 	}
+	/* (the list's own until list_begin takes another: a device lost
+	meanwhile releases it once) */
+	renderer.allocator = NULL;
 	uploaded_since_submit = 0;
 	renderer_debug_messages();
 	completed = renderer_completed();
@@ -537,6 +551,107 @@ void renderer_present_submit(void)
 		renderer_check(result, "Present");
 	/* at most the frames in flight behind the display */
 	WaitForSingleObject(renderer.frame_latency, 1000);
+}
+
+/* ---------- a lost device
+
+The GPU can be lost to the renderer: the driver reset after a hang, updated,
+or the adapter removed. Every call that reports it (renderer_check) comes
+here, which goes back to the ring's loop (renderer_main.c), where the device
+is made again and everything restored from what the renderer keeps. */
+
+jmp_buf renderer_recovery;
+BOOL renderer_recovery_armed;
+HRESULT renderer_lost_reason;
+
+BOOL renderer_lost_result(HRESULT result)
+{
+	return result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET ||
+		result == DXGI_ERROR_DEVICE_HUNG || result == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+void renderer_device_lost(HRESULT reason)
+{
+	if (!renderer_recovery_armed)
+		renderer_fail("the GPU was lost (0x%08lX) before the renderer was ready", (unsigned long)reason);
+	renderer_lost_reason = reason;
+	longjmp(renderer_recovery, 1);
+}
+
+/* every object of the device released (they are no use), and the device's
+own records emptied, for renderer_device_create to fill again */
+void renderer_device_release(void)
+{
+	int index;
+
+	for (index = 0; index < (int)release_count; index++)
+		IUnknown_Release(releases[index].object);
+	release_count = 0;
+	for (index = 0; index < allocator_count; index++)
+		ID3D12CommandAllocator_Release(allocators[index].allocator);
+	allocator_count = 0;
+	if (renderer.allocator)
+		ID3D12CommandAllocator_Release(renderer.allocator);
+	if (renderer.list)
+		ID3D12GraphicsCommandList_Release(renderer.list);
+	for (index = 0; index < upload_chunk_count; index++)
+		ID3D12Resource_Release(upload_chunks[index].buffer);
+	memset(upload_chunks, 0, sizeof(upload_chunks));
+	upload_chunk_count = 0;
+	upload_current = -1;
+	uploaded_since_submit = 0;
+	for (index = 0; index < RENDERER_SWAP_CHAIN_BUFFERS; index++)
+	{
+		if (renderer.buffers[index])
+			ID3D12Resource_Release(renderer.buffers[index]);
+	}
+	if (renderer.swap_chain)
+		IDXGISwapChain3_Release(renderer.swap_chain);
+	if (renderer.frame_latency)
+		CloseHandle(renderer.frame_latency);
+	if (renderer.view_heap)
+		ID3D12DescriptorHeap_Release(renderer.view_heap);
+	if (renderer.sampler_heap)
+		ID3D12DescriptorHeap_Release(renderer.sampler_heap);
+	if (renderer.rtv_heap)
+		ID3D12DescriptorHeap_Release(renderer.rtv_heap);
+	if (renderer.dsv_heap)
+		ID3D12DescriptorHeap_Release(renderer.dsv_heap);
+	view_pool.next = rtv_pool.next = dsv_pool.next = 0;
+	view_pool.free_count = rtv_pool.free_count = dsv_pool.free_count = 0;
+	view_pool.pending_count = rtv_pool.pending_count = dsv_pool.pending_count = 0;
+	if (renderer.queue)
+		ID3D12CommandQueue_Release(renderer.queue);
+	if (renderer.fence)
+		ID3D12Fence_Release(renderer.fence);
+	if (renderer.fence_event)
+		CloseHandle(renderer.fence_event);
+	if (info_queue)
+		ID3D12InfoQueue_Release(info_queue);
+	info_queue = NULL;
+	if (renderer.device)
+		ID3D12Device_Release(renderer.device);
+	{
+		uint32_t width = renderer.width, height = renderer.height;
+		BOOL vsync = renderer.vsync;
+
+		memset(&renderer, 0, sizeof(renderer));
+		renderer.width = width;
+		renderer.height = height;
+		renderer.vsync = vsync;
+	}
+}
+
+void renderer_remove_device(void)
+{
+	ID3D12Device5 *device;
+
+	if (SUCCEEDED(ID3D12Device_QueryInterface(renderer.device, &IID_ID3D12Device5, (void **)&device)))
+	{
+		renderer_log("removing the device, as the game asked (a test of its recovery)");
+		ID3D12Device5_RemoveDevice(device);
+		ID3D12Device5_Release(device);
+	}
 }
 
 /* ---------- the device */
@@ -675,7 +790,6 @@ void renderer_device_create(HANDLE surface, uint32_t width, uint32_t height, BOO
 	IDXGIFactory6_Release(factory);
 	renderer.width = width;
 	renderer.height = height;
-	renderer.vsync = TRUE;
 	buffers_get();
 
 	renderer.allocator = allocator_take();

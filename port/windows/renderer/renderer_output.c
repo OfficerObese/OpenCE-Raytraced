@@ -410,3 +410,44 @@ void renderer_screenshots_collect(void)
 		screenshot->readback = NULL;
 	}
 }
+
+/* ---------- a lost device: the passes' shaders are kept, their signature
+and pipelines made again; screenshots not yet read back are lost */
+
+void renderer_output_lost(void)
+{
+	int index, sample_index;
+
+	if (pass_signature)
+		ID3D12RootSignature_Release(pass_signature);
+	pass_signature = NULL;
+	for (index = 0; index < BLIT_FORMATS; index++)
+	{
+		if (blit_pipelines[index])
+			ID3D12PipelineState_Release(blit_pipelines[index]);
+		blit_pipelines[index] = NULL;
+	}
+	for (index = 0; index < 16; index++)
+	{
+		for (sample_index = 0; sample_index < 4; sample_index++)
+		{
+			if (clear_pipelines[index][sample_index])
+				ID3D12PipelineState_Release(clear_pipelines[index][sample_index]);
+			clear_pipelines[index][sample_index] = NULL;
+		}
+	}
+	for (index = 0; index < SCREENSHOT_LIMIT; index++)
+	{
+		if (screenshots[index].readback)
+		{
+			renderer_log("the screenshot %s is lost with the device", screenshots[index].path);
+			ID3D12Resource_Release(screenshots[index].readback);
+			screenshots[index].readback = NULL;
+		}
+	}
+}
+
+void renderer_output_restore(void)
+{
+	pass_signature_create();
+}

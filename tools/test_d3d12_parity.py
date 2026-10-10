@@ -74,11 +74,15 @@ SCENES = {
     "d20_fxaa": ("d20", EXACT),
     "c20_smaa": ("c20", EXACT),
     "d40_lit": ("d40", EXACT),
+    # the renderer loses its GPU device a quarter second after the player has
+    # control, and must draw the frame as d40 is, and c20 with SMAA (RESETS)
+    "d40_reset": ("d40", EXACT),
+    "c20_smaa_reset": ("c20", EXACT),
 }
 # scenes compared at full size, with their floors: anti-aliasing changes the
 # pixels of edges, which averaging hides (two runs of the OpenGL build: FXAA
 # 46.8 dB, SMAA 55.0; the D3D12 build without the passes: 41.8, 50.8)
-FULL_SIZE = {"d20_fxaa": 44.0, "c20_smaa": 53.0}
+FULL_SIZE = {"d20_fxaa": 44.0, "c20_smaa": 53.0, "c20_smaa_reset": 53.0}
 # the settings of those scenes
 SETTINGS = {
     "d40_msaa": {"HALO_ANTI_ALIASING": "msaa4x"},
@@ -86,7 +90,13 @@ SETTINGS = {
     "d20_fxaa": {"HALO_ANTI_ALIASING": "fxaa"},
     "c20_smaa": {"HALO_ANTI_ALIASING": "smaa"},
     "d40_lit": {"HALO_PER_PIXEL_LIGHTING": "true"},
+    "d40_reset": {"HALO_SCENE_TEST_DEVICE_RESET": "8"},
+    "c20_smaa_reset": {"HALO_ANTI_ALIASING": "smaa", "HALO_SCENE_TEST_DEVICE_RESET": "8"},
 }
+# scenes that are another's with the device lost on the way: compared with
+# that scene's reference, and failed if the game's log does not say the
+# renderer made the device again (the OpenGL build cannot: none recorded)
+RESETS = {"d40_reset": "d40", "c20_smaa_reset": "c20_smaa"}
 # scenes run at once
 JOBS = 3
 
@@ -208,6 +218,8 @@ def main():
     arguments = parser.parse_args()
     exe = Path(arguments.exe).resolve()
     scenes = arguments.scene or list(SCENES)
+    if arguments.mode == "record":
+        scenes = [name for name in scenes if name not in RESETS]
     REFERENCE.mkdir(parents=True, exist_ok=True)
 
     # (each scene its own data root and copy of the game; their frames are
@@ -222,7 +234,13 @@ def main():
             print(error)
             failures += 1
             continue
-        reference = REFERENCE / f"{name}.png"
+        reference = REFERENCE / f"{RESETS.get(name, name)}.png"
+        if name in RESETS:
+            log = DATA / name / "stderr.txt"
+            if "made it again" not in log.read_text(errors="replace"):
+                print(f"{name}: FAILED: the renderer did not make its device again; its log is {log}")
+                failures += 1
+                continue
         if arguments.mode == "record":
             Image.open(frame).convert("RGB").save(reference)
             print(f"{name}: recorded {frame}")

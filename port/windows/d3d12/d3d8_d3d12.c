@@ -340,6 +340,8 @@ struct d3d12_device
 	/* the window's drawable size and vsync, as last sent */
 	int sent_width, sent_height;
 	int sent_vsync;
+	/* the renderer's device_resets, as last seen */
+	unsigned long device_resets;
 
 	unsigned long frame;
 	unsigned long next_vertex_shader_id;
@@ -349,6 +351,9 @@ struct d3d12_device
 };
 
 static struct d3d12_device device;
+
+/* scene_test.c's: debug.scene_test_device_reset */
+extern void (*scene_test_device_reset)(void);
 
 /* the draw state and uniforms last sent */
 static struct xgpu_draw_state sent_state;
@@ -733,6 +738,14 @@ static BOOL bind_targets(struct render_target_entry **color_out, struct render_t
 
 /* ---------- device creation */
 
+/* the renderer told to remove its device (it makes it again, and restores
+everything from its own copies) */
+static void device_reset_request(void)
+{
+	if (device.ready)
+		xgpu_ring_send_data(_xgpu_op_debug_remove_device, NULL, 0, NULL, 0);
+}
+
 static void device_initialize(void)
 {
 	struct xgpu_header *header = xgpu_host_header();
@@ -746,6 +759,7 @@ static void device_initialize(void)
 		config_string("debug.gpu_dump_shaders") : NULL;
 	debug_settings.statistics = config_boolean("debug.gpu_stats");
 	anti_aliasing_maximum_samples = header->maximum_samples;
+	scene_test_device_reset = device_reset_request;
 	maximum_target_size = header->maximum_texture_size;
 	device.constants_first = XGPU_VERTEX_CONSTANT_COUNT;
 	device.sent_vsync = -1;
@@ -3286,15 +3300,24 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		present.target = back_buffer->target.texture;
 		present.frame = (uint32_t)device.frame + 1;
 		/* (paced as the renderer presents: at most XGPU_FRAMES_IN_FLIGHT
-		behind it, which waits for vsync) */
-		if (!xgpu_host_wait_frame())
+		behind it, which waits for vsync; a GPU that hangs is given up on by
+		the renderer in 10 seconds, and a device made again restores in a few) */
+		switch (xgpu_host_wait_frame(30000))
 		{
-			xgpu_ring_flush();
-			platform_log("the renderer has stopped");
-			exit(EXIT_FAILURE);
+		case 0:
+			xgpu_ring_renderer_stopped(NULL);
+		case -1:
+			xgpu_ring_renderer_stopped("it has not drawn a frame in 30 seconds.");
+		default:
+			break;
 		}
 		xgpu_ring_send_data(_xgpu_op_present, &present, sizeof(present), NULL, 0);
 		xgpu_ring_flush();
+		if (xgpu_host_header()->device_resets != device.device_resets)
+		{
+			device.device_resets = xgpu_host_header()->device_resets;
+			platform_log("the renderer lost the GPU and made it again (%lu times)", device.device_resets);
+		}
 		platform_video_swap();
 		memory_watch_begin_frame();
 		xgpu_texture_cache_begin_frame();

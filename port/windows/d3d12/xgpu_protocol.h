@@ -29,7 +29,7 @@ contiguous memory (d3d8_d3d12.c), numbered by their place in it.
 
 #include <stdint.h>
 
-#define XGPU_PROTOCOL_VERSION 1
+#define XGPU_PROTOCOL_VERSION 2
 
 #define XGPU_HEADER_SIZE 0x1000u
 #define XGPU_RESULTS_SIZE 0x10000u
@@ -81,8 +81,9 @@ struct xgpu_header
 	work has) */
 	volatile uint32_t frames_presented;
 	volatile uint32_t frames_completed;
-	/* raised by the renderer when the GPU was lost and the device made
-	again: every resource is gone, and the game sends them again */
+	/* raised by the renderer when the GPU was lost and it made the device
+	again, with every resource restored from its own copies (the frame that
+	was being drawn is lost) */
 	volatile uint32_t device_resets;
 	/* screenshots written (to the paths the game named) */
 	volatile uint32_t screenshots_written;
@@ -150,6 +151,9 @@ enum xgpu_opcode
 	/* struct xgpu_anti_alias_prepare and SMAA.hlsl's text: the passes of
 	_xgpu_op_anti_alias made before they are first drawn */
 	_xgpu_op_anti_alias_prepare,
+	/* no payload: the renderer removes its own device, a test of its recovery
+	(debug.scene_test_device_reset) */
+	_xgpu_op_debug_remove_device,
 	/* reserved for the path tracer: the scene in world space */
 	_xgpu_op_scene_begin_map = 64,
 	_xgpu_op_scene_mesh,

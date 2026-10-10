@@ -178,6 +178,74 @@ static void texture_release(struct renderer_texture *texture)
 	memset(&texture->srv, 0, sizeof(texture->srv));
 }
 
+/* ---------- what is kept of a texture's texels: each subresource as sent,
+packed (its rows, of texels or of 4x4 blocks, one after another) */
+
+static uint32_t subresource_count(const struct xgpu_texture_define *definition)
+{
+	return definition->levels * (definition->dimension == _xgpu_texture_cube ? 6 : 1);
+}
+
+/* a level's packed bytes: its rows' bytes, rows and slices */
+static void level_layout(const struct xgpu_texture_define *definition, uint32_t level, uint32_t *row_bytes,
+	uint32_t *rows, uint32_t *slices)
+{
+	uint32_t block = format_compressed(definition->format) ? 4 : 1;
+
+	*row_bytes = (level_size(definition->width, level) + block - 1) / block * format_bytes(definition->format);
+	*rows = (level_size(definition->height, level) + block - 1) / block;
+	*slices = definition->dimension == _xgpu_texture_3d ? level_size(definition->depth, level) : 1;
+}
+
+static void shadows_free(struct renderer_texture *texture)
+{
+	uint32_t index;
+
+	for (index = 0; index < texture->shadow_count; index++)
+		free(texture->shadows[index]);
+	free(texture->shadows);
+	texture->shadows = NULL;
+	texture->shadow_count = 0;
+	texture->mipmap_base = -1;
+}
+
+static void shadows_allocate(struct renderer_texture *texture)
+{
+	texture->shadow_count = subresource_count(&texture->definition);
+	texture->shadows = calloc(texture->shadow_count, sizeof(*texture->shadows));
+	if (!texture->shadows)
+		renderer_fail("out of memory");
+	texture->mipmap_base = -1;
+}
+
+/* the texture's resource and view, made for its definition */
+static void texture_create(struct renderer_texture *texture)
+{
+	const struct xgpu_texture_define *definition = &texture->definition;
+	D3D12_HEAP_PROPERTIES heap;
+	D3D12_RESOURCE_DESC description;
+
+	memset(&heap, 0, sizeof(heap));
+	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	memset(&description, 0, sizeof(description));
+	description.Dimension = definition->dimension == _xgpu_texture_3d ? D3D12_RESOURCE_DIMENSION_TEXTURE3D :
+		D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	description.Width = definition->width;
+	description.Height = definition->height;
+	description.DepthOrArraySize = (UINT16)(definition->dimension == _xgpu_texture_3d ? definition->depth :
+		definition->dimension == _xgpu_texture_cube ? 6 : 1);
+	description.MipLevels = (UINT16)definition->levels;
+	description.Format = texture->format;
+	description.SampleDesc.Count = 1;
+	description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	description.Flags = (definition->flags & XGPU_TEXTURE_RENDERABLE) ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET :
+		D3D12_RESOURCE_FLAG_NONE;
+	RENDERER_CHECK(ID3D12Device_CreateCommittedResource(renderer.device, &heap, D3D12_HEAP_FLAG_NONE, &description,
+		D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&texture->resource));
+	texture->state = D3D12_RESOURCE_STATE_COMMON;
+	texture_view(texture);
+}
+
 void renderer_texture_define(const struct xgpu_texture_define *definition)
 {
 	struct renderer_texture *texture = table_slot((void ***)&textures, &texture_capacity, definition->texture,
@@ -185,8 +253,6 @@ void renderer_texture_define(const struct xgpu_texture_define *definition)
 	DXGI_FORMAT format = texture_format(definition->format);
 	uint32_t largest = definition->width > definition->height ? definition->width : definition->height;
 	uint32_t full_chain = 1, channel;
-	D3D12_HEAP_PROPERTIES heap;
-	D3D12_RESOURCE_DESC description;
 
 	if (largest < definition->depth)
 		largest = definition->depth;
@@ -223,6 +289,7 @@ void renderer_texture_define(const struct xgpu_texture_define *definition)
 		return;
 	}
 	texture_release(texture);
+	shadows_free(texture);
 	texture->definition = *definition;
 	texture->format = format;
 	/* (D3D12 makes a BC texture's top level a whole number of blocks: the
@@ -238,36 +305,97 @@ void renderer_texture_define(const struct xgpu_texture_define *definition)
 	{
 		renderer_fail("texture %u is renderable but not a 2D texture of 32-bit texels", definition->texture);
 	}
+	/* (kept first: a device lost while the texture is made makes it again) */
+	shadows_allocate(texture);
+	texture_create(texture);
+}
 
-	memset(&heap, 0, sizeof(heap));
-	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	memset(&description, 0, sizeof(description));
-	description.Dimension = definition->dimension == _xgpu_texture_3d ? D3D12_RESOURCE_DIMENSION_TEXTURE3D :
-		D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	description.Width = definition->width;
-	description.Height = definition->height;
-	description.DepthOrArraySize = (UINT16)(definition->dimension == _xgpu_texture_3d ? definition->depth :
-		definition->dimension == _xgpu_texture_cube ? 6 : 1);
-	description.MipLevels = (UINT16)definition->levels;
-	description.Format = format;
-	description.SampleDesc.Count = 1;
-	description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	description.Flags = (definition->flags & XGPU_TEXTURE_RENDERABLE) ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET :
-		D3D12_RESOURCE_FLAG_NONE;
-	RENDERER_CHECK(ID3D12Device_CreateCommittedResource(renderer.device, &heap, D3D12_HEAP_FLAG_NONE, &description,
-		D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&texture->resource));
-	texture->state = D3D12_RESOURCE_STATE_COMMON;
-	texture_view(texture);
+/* a checked region's texels copied into the texture */
+static void texels_upload(struct renderer_texture *texture, const struct xgpu_texture_data *data, const uint8_t *bytes)
+{
+	const struct xgpu_texture_define *definition = &texture->definition;
+	uint32_t block = format_compressed(definition->format) ? 4 : 1;
+	uint32_t rows = (data->height + block - 1) / block;
+	uint32_t row_bytes = (data->width + block - 1) / block * format_bytes(definition->format);
+	uint32_t pitch, z, row;
+	struct renderer_upload upload;
+	D3D12_TEXTURE_COPY_LOCATION source, destination;
+	D3D12_BOX box;
+
+	pitch = (row_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+	upload = renderer_upload_allocate((uint64_t)pitch * rows * data->depth, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+	for (z = 0; z < data->depth; z++)
+	{
+		for (row = 0; row < rows; row++)
+		{
+			memcpy((uint8_t *)upload.data + ((uint64_t)z * rows + row) * pitch,
+				bytes + ((uint64_t)z * rows + row) * data->row_pitch, row_bytes);
+		}
+	}
+	memset(&source, 0, sizeof(source));
+	source.pResource = upload.buffer;
+	source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	source.PlacedFootprint.Offset = upload.offset;
+	source.PlacedFootprint.Footprint.Format = texture->format;
+	/* (a block-compressed footprint is whole blocks) */
+	source.PlacedFootprint.Footprint.Width = (data->width + block - 1) / block * block;
+	source.PlacedFootprint.Footprint.Height = rows * block;
+	source.PlacedFootprint.Footprint.Depth = data->depth;
+	source.PlacedFootprint.Footprint.RowPitch = pitch;
+	memset(&destination, 0, sizeof(destination));
+	destination.pResource = texture->resource;
+	destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	destination.SubresourceIndex = data->level + data->face * definition->levels;
+	/* (whole blocks of the footprint: a level of a BC texture smaller than a
+	block takes the block whole) */
+	box.left = 0;
+	box.top = 0;
+	box.front = 0;
+	box.right = source.PlacedFootprint.Footprint.Width;
+	box.bottom = source.PlacedFootprint.Footprint.Height;
+	box.back = data->depth;
+	renderer_texture_state(texture, D3D12_RESOURCE_STATE_COPY_DEST);
+	ID3D12GraphicsCommandList_CopyTextureRegion(renderer.list, &destination, data->x, data->y, data->z, &source, &box);
+	renderer_texture_state(texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
+/* a checked region's texels into what is kept of its subresource */
+static void texels_keep(struct renderer_texture *texture, const struct xgpu_texture_data *data, const uint8_t *bytes)
+{
+	const struct xgpu_texture_define *definition = &texture->definition;
+	uint32_t block = format_compressed(definition->format) ? 4 : 1;
+	uint32_t subresource = data->level + data->face * definition->levels;
+	uint32_t level_row_bytes, level_rows, slices, rows, row_bytes, x_bytes, z, row;
+	uint8_t *shadow;
+
+	if (!texture->shadows || subresource >= texture->shadow_count)
+		return;
+	level_layout(definition, data->level, &level_row_bytes, &level_rows, &slices);
+	if (!texture->shadows[subresource])
+	{
+		texture->shadows[subresource] = calloc((size_t)level_row_bytes * level_rows, slices);
+		if (!texture->shadows[subresource])
+			renderer_fail("out of memory");
+	}
+	shadow = texture->shadows[subresource];
+	rows = (data->height + block - 1) / block;
+	row_bytes = (data->width + block - 1) / block * format_bytes(definition->format);
+	x_bytes = data->x / block * format_bytes(definition->format);
+	for (z = 0; z < data->depth; z++)
+	{
+		for (row = 0; row < rows; row++)
+		{
+			memcpy(shadow + (((size_t)data->z + z) * level_rows + data->y / block + row) * level_row_bytes + x_bytes,
+				bytes + ((size_t)z * rows + row) * data->row_pitch, row_bytes);
+		}
+	}
 }
 
 void renderer_texture_data(const struct xgpu_texture_data *data, const uint8_t *bytes, uint32_t size)
 {
 	struct renderer_texture *texture = renderer_texture_get(data->texture);
 	const struct xgpu_texture_define *definition;
-	uint32_t level_width, level_height, level_depth, block, rows, row_bytes, pitch, z, row;
-	struct renderer_upload upload;
-	D3D12_TEXTURE_COPY_LOCATION source, destination;
-	D3D12_BOX box;
+	uint32_t level_width, level_height, level_depth, block, rows, row_bytes;
 
 	if (!texture)
 	{
@@ -298,43 +426,8 @@ void renderer_texture_data(const struct xgpu_texture_data *data, const uint8_t *
 	row_bytes = (data->width + block - 1) / block * format_bytes(definition->format);
 	if (data->row_pitch < row_bytes || (uint64_t)data->row_pitch * rows * data->depth > size)
 		renderer_fail("texels for texture %u run past their message", data->texture);
-
-	pitch = (row_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
-	upload = renderer_upload_allocate((uint64_t)pitch * rows * data->depth, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
-	for (z = 0; z < data->depth; z++)
-	{
-		for (row = 0; row < rows; row++)
-		{
-			memcpy((uint8_t *)upload.data + ((uint64_t)z * rows + row) * pitch,
-				bytes + ((uint64_t)z * rows + row) * data->row_pitch, row_bytes);
-		}
-	}
-
-	memset(&source, 0, sizeof(source));
-	source.pResource = upload.buffer;
-	source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-	source.PlacedFootprint.Offset = upload.offset;
-	source.PlacedFootprint.Footprint.Format = texture->format;
-	/* (a block-compressed footprint is whole blocks) */
-	source.PlacedFootprint.Footprint.Width = (data->width + block - 1) / block * block;
-	source.PlacedFootprint.Footprint.Height = rows * block;
-	source.PlacedFootprint.Footprint.Depth = data->depth;
-	source.PlacedFootprint.Footprint.RowPitch = pitch;
-	memset(&destination, 0, sizeof(destination));
-	destination.pResource = texture->resource;
-	destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-	destination.SubresourceIndex = data->level + data->face * definition->levels;
-	/* (whole blocks of the footprint: a level of a BC texture smaller than a
-	block takes the block whole) */
-	box.left = 0;
-	box.top = 0;
-	box.front = 0;
-	box.right = source.PlacedFootprint.Footprint.Width;
-	box.bottom = source.PlacedFootprint.Footprint.Height;
-	box.back = data->depth;
-	renderer_texture_state(texture, D3D12_RESOURCE_STATE_COPY_DEST);
-	ID3D12GraphicsCommandList_CopyTextureRegion(renderer.list, &destination, data->x, data->y, data->z, &source, &box);
-	renderer_texture_state(texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	texels_keep(texture, data, bytes);
+	texels_upload(texture, data, bytes);
 }
 
 void renderer_texture_mipmaps(const struct xgpu_texture_reference *reference)
@@ -348,6 +441,7 @@ void renderer_texture_mipmaps(const struct xgpu_texture_reference *reference)
 	definition = &texture->definition;
 	if (!(definition->flags & XGPU_TEXTURE_RENDERABLE) || reference->base_level >= definition->levels)
 		renderer_fail("mip levels made for texture %u, which cannot have them", reference->texture);
+	texture->mipmap_base = (int32_t)reference->base_level;
 	for (level = reference->base_level + 1; level < definition->levels; level++)
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC view;
@@ -398,6 +492,7 @@ void renderer_texture_delete(uint32_t number)
 	if (number < texture_capacity && textures[number])
 	{
 		texture_release(textures[number]);
+		shadows_free(textures[number]);
 		free(textures[number]);
 		textures[number] = NULL;
 	}
@@ -603,34 +698,159 @@ static ID3D12Resource *mirror_buffers[XGPU_MIRROR_SEGMENT_LIMIT];
 /* (a buffer is made in the common state, and is read in MIRROR_READ_STATE
 once written) */
 static D3D12_RESOURCE_STATES mirror_states[XGPU_MIRROR_SEGMENT_LIMIT];
+/* each segment's bytes, kept to fill its buffer again on a new device */
+static uint8_t *mirror_shadows[XGPU_MIRROR_SEGMENT_LIMIT];
 
-void renderer_mirror_write(const struct xgpu_mirror_write *write, const uint8_t *bytes, uint32_t size)
+static void mirror_upload(uint32_t segment, uint32_t offset, const uint8_t *bytes, uint32_t size)
 {
 	struct renderer_upload upload;
 
+	if (!mirror_buffers[segment])
+	{
+		mirror_buffers[segment] = renderer_buffer_create(D3D12_HEAP_TYPE_DEFAULT, XGPU_MIRROR_SEGMENT_SIZE,
+			D3D12_RESOURCE_STATE_COMMON);
+		mirror_states[segment] = D3D12_RESOURCE_STATE_COMMON;
+	}
+	upload = renderer_upload_allocate(size, 16);
+	memcpy(upload.data, bytes, size);
+	renderer_transition(mirror_buffers[segment], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, mirror_states[segment],
+		D3D12_RESOURCE_STATE_COPY_DEST);
+	mirror_states[segment] = MIRROR_READ_STATE;
+	ID3D12GraphicsCommandList_CopyBufferRegion(renderer.list, mirror_buffers[segment], offset, upload.buffer,
+		upload.offset, size);
+	renderer_transition(mirror_buffers[segment], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+		D3D12_RESOURCE_STATE_COPY_DEST, MIRROR_READ_STATE);
+}
+
+void renderer_mirror_write(const struct xgpu_mirror_write *write, const uint8_t *bytes, uint32_t size)
+{
 	if (write->segment >= XGPU_MIRROR_SEGMENT_LIMIT || write->offset > XGPU_MIRROR_SEGMENT_SIZE ||
 		size > XGPU_MIRROR_SEGMENT_SIZE - write->offset || !size)
 	{
 		renderer_fail("a mirror write of %u bytes at %u in segment %u", size, write->offset, write->segment);
 	}
-	if (!mirror_buffers[write->segment])
+	if (!mirror_shadows[write->segment])
 	{
-		mirror_buffers[write->segment] = renderer_buffer_create(D3D12_HEAP_TYPE_DEFAULT, XGPU_MIRROR_SEGMENT_SIZE,
-			D3D12_RESOURCE_STATE_COMMON);
-		mirror_states[write->segment] = D3D12_RESOURCE_STATE_COMMON;
+		mirror_shadows[write->segment] = calloc(1, XGPU_MIRROR_SEGMENT_SIZE);
+		if (!mirror_shadows[write->segment])
+			renderer_fail("out of memory");
 	}
-	upload = renderer_upload_allocate(size, 16);
-	memcpy(upload.data, bytes, size);
-	renderer_transition(mirror_buffers[write->segment], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-		mirror_states[write->segment], D3D12_RESOURCE_STATE_COPY_DEST);
-	mirror_states[write->segment] = MIRROR_READ_STATE;
-	ID3D12GraphicsCommandList_CopyBufferRegion(renderer.list, mirror_buffers[write->segment], write->offset,
-		upload.buffer, upload.offset, size);
-	renderer_transition(mirror_buffers[write->segment], D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-		D3D12_RESOURCE_STATE_COPY_DEST, MIRROR_READ_STATE);
+	memcpy(mirror_shadows[write->segment] + write->offset, bytes, size);
+	mirror_upload(write->segment, write->offset, bytes, size);
 }
 
 ID3D12Resource *renderer_mirror_buffer(uint32_t segment)
 {
 	return segment < XGPU_MIRROR_SEGMENT_LIMIT ? mirror_buffers[segment] : NULL;
+}
+
+/* ---------- a lost device */
+
+void renderer_resources_lost(void)
+{
+	uint32_t index;
+
+	/* (the objects are released at once: the device they belong to is gone,
+	and its descriptor heaps with every view) */
+	for (index = 0; index < texture_capacity; index++)
+	{
+		struct renderer_texture *texture = textures[index];
+
+		if (!texture)
+			continue;
+		if (texture->resource)
+			ID3D12Resource_Release(texture->resource);
+		texture->resource = NULL;
+		memset(&texture->srv, 0, sizeof(texture->srv));
+	}
+	for (index = 0; index < target_capacity; index++)
+	{
+		struct renderer_target *target = targets[index];
+
+		if (!target)
+			continue;
+		if (target->resource)
+			ID3D12Resource_Release(target->resource);
+		if (target->multisampled)
+			ID3D12Resource_Release(target->multisampled);
+		target->resource = NULL;
+		target->multisampled = NULL;
+		memset(&target->view, 0, sizeof(target->view));
+		memset(&target->draw_view, 0, sizeof(target->draw_view));
+		memset(&target->srv, 0, sizeof(target->srv));
+	}
+	for (index = 0; index < XGPU_MIRROR_SEGMENT_LIMIT; index++)
+	{
+		if (mirror_buffers[index])
+			ID3D12Resource_Release(mirror_buffers[index]);
+		mirror_buffers[index] = NULL;
+	}
+	memset(null_srvs, 0, sizeof(null_srvs));
+}
+
+/* everything made again on the new device: the targets (their pixels are the
+game's to draw again), the textures from their kept texels, the mirror from
+its kept bytes */
+void renderer_resources_restore(void)
+{
+	uint32_t index;
+
+	renderer_resources_initialize();
+	for (index = 0; index < target_capacity; index++)
+	{
+		struct renderer_target *target = targets[index];
+
+		if (target && target->definition.width)
+		{
+			struct xgpu_target_define definition = target->definition;
+
+			renderer_target_define(&definition);
+		}
+	}
+	for (index = 0; index < texture_capacity; index++)
+	{
+		struct renderer_texture *texture = textures[index];
+		uint32_t subresource;
+
+		/* (one with kept texels was made; the others D3D12 does not take) */
+		if (!texture || !texture->shadows)
+			continue;
+		texture_create(texture);
+		for (subresource = 0; subresource < texture->shadow_count; subresource++)
+		{
+			struct xgpu_texture_data data;
+			uint32_t row_bytes, rows, slices;
+
+			if (!texture->shadows[subresource])
+				continue;
+			memset(&data, 0, sizeof(data));
+			data.texture = texture->definition.texture;
+			data.level = subresource % texture->definition.levels;
+			data.face = subresource / texture->definition.levels;
+			level_layout(&texture->definition, data.level, &row_bytes, &rows, &slices);
+			data.width = level_size(texture->definition.width, data.level);
+			data.height = level_size(texture->definition.height, data.level);
+			data.depth = slices;
+			data.row_pitch = row_bytes;
+			texels_upload(texture, &data, texture->shadows[subresource]);
+		}
+		if (texture->mipmap_base >= 0)
+		{
+			struct xgpu_texture_reference reference;
+
+			memset(&reference, 0, sizeof(reference));
+			reference.texture = texture->definition.texture;
+			reference.base_level = (uint32_t)texture->mipmap_base;
+			renderer_texture_mipmaps(&reference);
+		}
+		renderer_submit_if_large();
+	}
+	for (index = 0; index < XGPU_MIRROR_SEGMENT_LIMIT; index++)
+	{
+		if (mirror_shadows[index])
+		{
+			mirror_upload(index, 0, mirror_shadows[index], XGPU_MIRROR_SEGMENT_SIZE);
+			renderer_submit_if_large();
+		}
+	}
 }

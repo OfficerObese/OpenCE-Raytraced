@@ -145,14 +145,16 @@ void xgpu_host_signal_data(void)
 	SetEvent(host.data_event);
 }
 
-int xgpu_host_wait_frame(void)
+int xgpu_host_wait_frame(unsigned long milliseconds)
 {
 	HANDLE handles[2];
 	DWORD result;
 
 	handles[0] = host.frame_semaphore;
 	handles[1] = host.process;
-	result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+	result = WaitForMultipleObjects(2, handles, FALSE, milliseconds);
+	if (result == WAIT_TIMEOUT)
+		return -1;
 	return result == WAIT_OBJECT_0 && host.header->renderer_state != _xgpu_renderer_failed;
 }
 

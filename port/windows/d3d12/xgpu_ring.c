@@ -18,13 +18,13 @@ whole, and the renderer is woken only when it has said it sleeps
 #include <stdlib.h>
 #include <string.h>
 
-static void renderer_lost(void)
+void xgpu_ring_renderer_stopped(const char *reason)
 {
 	struct xgpu_header *header = xgpu_host_header();
 	char message[640];
 
 	snprintf(message, sizeof(message), "The renderer (halo_renderer.exe) has stopped: %s",
-		header && header->error[0] ? header->error : "it exited.");
+		reason ? reason : header && header->error[0] ? header->error : "it exited.");
 	platform_log("%s", message);
 	/* (a run nobody watches: the log only) */
 	if (!config_boolean("debug.hidden_window") && config_real("debug.exit_after") <= 0.0 &&
@@ -56,7 +56,7 @@ void *xgpu_ring_reserve(unsigned long opcode, unsigned long size)
 		/* (whatever is waiting in the ring, the renderer must see) */
 		xgpu_ring_flush();
 		if (!xgpu_host_wait_space(100) || header->renderer_state == _xgpu_renderer_failed)
-			renderer_lost();
+			xgpu_ring_renderer_stopped(NULL);
 	}
 	if (pad)
 	{

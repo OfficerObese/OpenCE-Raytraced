@@ -155,7 +155,7 @@ def windows_configure_inputs() -> List[Path]:
 D3D12_DIR = PORT_DIR / "d3d12"
 RENDERER_DIR = PORT_DIR / "renderer"
 D3D12_REPLACED_SOURCES = {"d3d8_gl.c", "gl_functions.c", "xgpu_post.c"}
-RENDERER_LIBRARIES = ["d3d12", "dxgi", "dxguid", "d3dcompiler", "windowscodecs", "ole32", "user32"]
+RENDERER_LIBRARIES = ["d3d12", "dxgi", "dxguid", "d3dcompiler", "windowscodecs", "ole32", "user32", "dbghelp"]
 
 
 def windows_d3d12(sln: Any) -> bool:

@@ -28,6 +28,7 @@ One thread does everything; nothing here is called from elsewhere.
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <setjmp.h>
 #include <stdint.h>
 
 #include "../d3d12/xgpu_protocol.h"
@@ -91,6 +92,31 @@ struct renderer_device
 extern struct renderer_device renderer;
 
 void renderer_device_create(HANDLE surface, uint32_t width, uint32_t height, BOOL debug_layer);
+
+/* A lost device (removed, reset, hung: renderer_lost_result) goes back to
+the ring's loop through renderer_recovery (renderer_main.c), which releases
+every module's objects (the *_lost functions), makes the device again and
+restores them (the *_restore functions) from what the renderer keeps: the
+textures' texels, the mirror's bytes, the shaders' code, the targets'
+definitions. */
+extern jmp_buf renderer_recovery;
+extern BOOL renderer_recovery_armed;
+extern HRESULT renderer_lost_reason;
+BOOL renderer_lost_result(HRESULT result);
+void renderer_device_lost(HRESULT reason) __attribute__((noreturn));
+void renderer_device_release(void);
+/* (the game's test of the recovery: debug.scene_test_device_reset) */
+void renderer_remove_device(void);
+void renderer_resources_lost(void);
+void renderer_resources_restore(void);
+void renderer_pipeline_lost(void);
+void renderer_pipeline_restore(void);
+void renderer_draw_lost(void);
+void renderer_draw_restore(void);
+void renderer_output_lost(void);
+void renderer_output_restore(void);
+void renderer_post_lost(void);
+void renderer_post_restore(void);
 /* the debug layer's messages since last asked, into the log (nothing without
 the layer) */
 void renderer_debug_messages(void);
@@ -150,6 +176,12 @@ struct renderer_texture
 	DXGI_FORMAT format;
 	/* the resource's state (every subresource alike) */
 	D3D12_RESOURCE_STATES state;
+	/* the texels sent for each subresource (a level of a face), packed, kept
+	to fill the texture again on a new device; NULL where none came */
+	uint8_t **shadows;
+	uint32_t shadow_count;
+	/* the level its others were last made from by the GPU (-1: none) */
+	int32_t mipmap_base;
 };
 
 struct renderer_target

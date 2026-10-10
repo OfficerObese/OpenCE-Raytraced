@@ -855,8 +855,10 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 			sizeof(error)))
 		{
 			platform_log("cannot start the renderer: %s", error);
-			SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Halo", error, platform_window);
-			return FALSE;
+			/* (no picture without it: the game ends, rather than play unseen) */
+			if (!config_boolean("debug.hidden_window") && config_integer("debug.scene_test") <= 0)
+				SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Halo", error, platform_window);
+			exit(EXIT_FAILURE);
 		}
 		(void)version;
 		platform_event_thread = SDL_GetCurrentThreadID();

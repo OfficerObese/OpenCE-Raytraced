@@ -10,10 +10,14 @@ handles it inherits,
 in hexadecimal but for the window's size; it maps the shared section, makes
 the device and reads the ring until the game says to quit. Each message's
 size is checked against what its kind holds before anything reads it.
+
+A crash writes halo_renderer.dmp beside the log (a minidump, for a debugger)
+and the exception into the log and the shared header, which the game shows.
 */
 
 #include "renderer.h"
 
+#include <dbghelp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +29,10 @@ struct xgpu_results *renderer_results;
 static const uint8_t *ring;
 static HANDLE data_event, space_event, frame_semaphore;
 static FILE *log_file;
+static char log_path[MAX_PATH];
+/* what the device is made with, made again with after it is lost */
+static HANDLE surface;
+static BOOL debug_layer;
 
 void renderer_log(const char *format, ...)
 {
@@ -75,6 +83,11 @@ void renderer_check(HRESULT result, const char *what)
 	{
 		if (result == DXGI_ERROR_DEVICE_REMOVED && renderer.device)
 			result = ID3D12Device_GetDeviceRemovedReason(renderer.device);
+		if (renderer_lost_result(result) && renderer_recovery_armed)
+		{
+			renderer_log("%s: the GPU was lost (0x%08lX)", what, (unsigned long)result);
+			renderer_device_lost(result);
+		}
 		renderer_fail("%s failed (0x%08lX)", what, (unsigned long)result);
 	}
 }
@@ -228,6 +241,11 @@ static BOOL message_handle(uint32_t opcode, const uint8_t *data, uint32_t size)
 		break;
 	case _xgpu_op_quit:
 		return FALSE;
+	case _xgpu_op_debug_remove_device:
+		renderer_remove_device();
+		/* (found lost at once, rather than at the next wait) */
+		renderer_wait(renderer_submit());
+		break;
 	default:
 		/* the path tracer's scene messages are not taken yet */
 		if (opcode >= _xgpu_op_scene_begin_map && opcode < NUMBER_OF_XGPU_OPCODES)
@@ -237,8 +255,60 @@ static BOOL message_handle(uint32_t opcode, const uint8_t *data, uint32_t size)
 	return TRUE;
 }
 
+/* ---------- a lost device */
+
+/* recoveries since a frame was last presented: a device lost again and again
+before any frame is drawn is not recovered from */
+static int recoveries_without_frame;
+
+static void device_recover(void)
+{
+	renderer_log("the GPU was lost (0x%08lX): making the device again", (unsigned long)renderer_lost_reason);
+	if (++recoveries_without_frame > 3)
+		renderer_fail("the GPU was lost again and again (0x%08lX)", (unsigned long)renderer_lost_reason);
+	renderer_resources_lost();
+	renderer_post_lost();
+	renderer_output_lost();
+	renderer_draw_lost();
+	renderer_pipeline_lost();
+	renderer_device_release();
+	renderer_device_create(surface, renderer.width, renderer.height, debug_layer);
+	renderer_pipeline_restore();
+	renderer_output_restore();
+	renderer_post_restore();
+	renderer_draw_restore();
+	renderer_resources_restore();
+	renderer_wait(renderer_submit());
+	InterlockedIncrement((volatile LONG *)&renderer_header->device_resets);
+	renderer_log("the device is made again, and everything restored");
+}
+
+/* the message being handled when the device was lost is passed over (its
+work is lost with the frame), a present as if it were shown */
+static void message_skip(void)
+{
+	uint32_t read = renderer_header->read_position;
+	const struct xgpu_message_header *header = (const void *)(ring + (read & (XGPU_RING_SIZE - 1)));
+
+	read += (uint32_t)sizeof(*header) + XGPU_ALIGN(header->size);
+	if (header->opcode == _xgpu_op_present)
+	{
+		InterlockedIncrement((volatile LONG *)&renderer_header->frames_presented);
+		ReleaseSemaphore(frame_semaphore, 1, NULL);
+	}
+	InterlockedExchange((volatile LONG *)&renderer_header->read_position, (LONG)read);
+	SetEvent(space_event);
+}
+
 static void ring_run(void)
 {
+	/* (a lost device comes back here, from wherever it was found) */
+	if (setjmp(renderer_recovery))
+	{
+		device_recover();
+		message_skip();
+	}
+	renderer_recovery_armed = TRUE;
 	for (;;)
 	{
 		uint32_t read = renderer_header->read_position;
@@ -270,6 +340,8 @@ static void ring_run(void)
 				renderer_fail("a message runs past what was written");
 			renderer_submit_if_large();
 			running = message_handle(opcode, (const uint8_t *)(header + 1), size);
+			if (opcode == _xgpu_op_present)
+				recoveries_without_frame = 0;
 			read += total;
 			InterlockedExchange((volatile LONG *)&renderer_header->read_position, (LONG)read);
 			SetEvent(space_event);
@@ -279,6 +351,38 @@ static void ring_run(void)
 	}
 }
 
+/* ---------- a crash */
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *exception)
+{
+	static LONG entered;
+	char dump_path[MAX_PATH + 8];
+	char *slash;
+	HANDLE file;
+
+	if (InterlockedExchange(&entered, 1))
+		return EXCEPTION_CONTINUE_SEARCH;
+	/* (the dump beside the log) */
+	strcpy(dump_path, log_path);
+	slash = strrchr(dump_path, '\\');
+	strcpy(slash ? slash + 1 : dump_path, "halo_renderer.dmp");
+	file = CreateFileA(dump_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file != INVALID_HANDLE_VALUE)
+	{
+		MINIDUMP_EXCEPTION_INFORMATION information;
+
+		information.ThreadId = GetCurrentThreadId();
+		information.ExceptionPointers = exception;
+		information.ClientPointers = FALSE;
+		MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), file,
+			(MINIDUMP_TYPE)(MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo), &information, NULL, NULL);
+		CloseHandle(file);
+	}
+	renderer_fail("the renderer crashed: exception 0x%08lX at %p (%s)",
+		(unsigned long)exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress,
+		file != INVALID_HANDLE_VALUE ? dump_path : "no minidump written");
+}
+
 static HANDLE handle_argument(const char *argument)
 {
 	return (HANDLE)(ULONG_PTR)strtoull(argument, NULL, 16);
@@ -286,9 +390,8 @@ static HANDLE handle_argument(const char *argument)
 
 int main(int argc, char **argv)
 {
-	HANDLE section, surface;
+	HANDLE section;
 	uint32_t width, height;
-	char log_path[MAX_PATH];
 
 	if (argc != 8)
 	{
@@ -321,6 +424,10 @@ int main(int argc, char **argv)
 		}
 	}
 
+	if (!log_file)
+		strcpy(log_path, "halo_renderer.log");
+	SetUnhandledExceptionFilter(crash_filter);
+
 	renderer_header = MapViewOfFile(section, FILE_MAP_ALL_ACCESS, 0, 0, XGPU_SECTION_SIZE);
 	if (!renderer_header)
 	{
@@ -334,7 +441,8 @@ int main(int argc, char **argv)
 	if (!width || !height || width > 16384 || height > 16384)
 		renderer_fail("the window size %ux%u is not usable", width, height);
 
-	renderer_device_create(surface, width, height, GetEnvironmentVariableA("HALO_D3D12_DEBUG_LAYER", NULL, 0) != 0);
+	debug_layer = GetEnvironmentVariableA("HALO_D3D12_DEBUG_LAYER", NULL, 0) != 0;
+	renderer_device_create(surface, width, height, debug_layer);
 	renderer_resources_initialize();
 	renderer_pipeline_initialize();
 	renderer_draw_initialize();
@@ -346,6 +454,7 @@ int main(int argc, char **argv)
 	renderer_log("ready on %s", renderer_header->adapter_name);
 
 	ring_run();
+	renderer_recovery_armed = FALSE;
 	renderer_wait(renderer_submit());
 	renderer_screenshots_collect();
 	renderer_log("the game said to quit");
