@@ -256,6 +256,8 @@ struct vertex_shader_object
 	struct nv2a_vertex_lighting lighting;
 	BOOL lighting_failed;
 	struct vertex_variant *variants;
+	/* (debug.gpu_stats: a repacked stream of its logged) */
+	BOOL repack_logged;
 };
 
 /* ---------- render targets */
@@ -2646,6 +2648,19 @@ static BOOL element_used(const struct vertex_element *element)
 		vertex_format(element->type) != _xgpu_vertex_none && element->reg < XGPU_ATTRIBUTE_COUNT;
 }
 
+/* the alignment D3D12 asks of an element's offset: its format's size, up to
+4 (what the renderer reads it as: three 16-bit components as four, three
+bytes as four) */
+static unsigned long element_alignment(const struct vertex_element *element)
+{
+	switch (element->type)
+	{
+	case D3DVSDT_PBYTE1: return 1;
+	case D3DVSDT_SHORT1: case D3DVSDT_NORMSHORT1: case D3DVSDT_PBYTE2: return 2;
+	default: return 4;
+	}
+}
+
 /* the bytes a repacked element takes: what D3D12 reads of it (three
 16-bit components are read as four), a multiple of 4 */
 static unsigned long element_room(const struct vertex_element *element)
@@ -2655,11 +2670,12 @@ static unsigned long element_room(const struct vertex_element *element)
 	return (element->bytes + 3) & ~3UL;
 }
 
-/* D3D12 takes an element only at an offset of a multiple of 4 (the Xbox's
-declarations put 16-bit and byte components anywhere): a stream with one
-elsewhere, or a stride that is not such a multiple, is copied into the
-draw's own bytes with each of its elements at such an offset; returns the
-stride of the copy and gives each element's offset there */
+/* D3D12 takes an element only at an offset aligned to its format's size, up
+to 4 (element_alignment; the Xbox's declarations put a three-byte color, read
+as four bytes, anywhere): a stream with one elsewhere is copied into the
+draw's own bytes with each of its elements at a multiple of 4; returns the
+stride of the copy and gives each element's offset there. Few draws have
+one: the rest read the mirror. */
 static unsigned long stream_repack(const struct vertex_shader_object *declaration, unsigned long stream,
 	unsigned long first, unsigned long count, struct xgpu_draw_source *source, unsigned short *offsets)
 {
@@ -2722,8 +2738,17 @@ static void setup_streams(unsigned long first, unsigned long count, struct xgpu_
 		const struct vertex_element *element = &declaration->elements[index];
 
 		offsets[index] = element->offset;
-		if (element_used(element) && (element->offset % 4 || device.streams[element->stream].stride % 4))
+		if (element_used(element) && element->offset % element_alignment(element))
+		{
 			repacked[element->stream] = TRUE;
+			if (debug_settings.statistics && !declaration->repack_logged)
+			{
+				declaration->repack_logged = TRUE;
+				platform_log("GPU: vertex shader %lu's stream %u repacked: v%u type %02x at %u, stride %u",
+					declaration->id, element->stream, element->reg, element->type, element->offset,
+					device.streams[element->stream].stride);
+			}
+		}
 	}
 	for (index = 0; index < declaration->element_count; index++)
 	{

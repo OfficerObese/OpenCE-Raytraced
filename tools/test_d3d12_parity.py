@@ -105,17 +105,9 @@ def link_maps(data_root, game):
     subprocess.run(["cmd", "/c", "mklink", "/J", str(maps), str(target)], check=True, stdout=subprocess.DEVNULL)
 
 
-def run_scene(exe, game, name):
-    """runs one scene; returns the path of its frame"""
-    level, _ = SCENES[name]
-    data_root = DATA / name
-    data_root.mkdir(parents=True, exist_ok=True)
-    link_maps(data_root, game)
-    for folder in ("shots", "screenshots"):
-        if (data_root / folder).exists():
-            shutil.rmtree(data_root / folder)
-    (data_root / "shots").mkdir()
-    (data_root / "init.txt").write_text(f"map_name levels\\{level}\\{level}\n" if level else "")
+def scene_environment(data_root):
+    """the environment a scene's game runs with, in its data root: windowed,
+    silent, taking no input, with no internet play"""
     environment = dict(os.environ)
     environment.update({
         "HALO_DATA_ROOT": str(data_root),
@@ -144,6 +136,21 @@ def run_scene(exe, game, name):
         # (the D3D12 build's renderer log, with the scene's)
         "HALO_RENDERER_LOG": str(data_root / "renderer.txt"),
     })
+    return environment
+
+
+def run_scene(exe, game, name):
+    """runs one scene; returns the path of its frame"""
+    level, _ = SCENES[name]
+    data_root = DATA / name
+    data_root.mkdir(parents=True, exist_ok=True)
+    link_maps(data_root, game)
+    for folder in ("shots", "screenshots"):
+        if (data_root / folder).exists():
+            shutil.rmtree(data_root / folder)
+    (data_root / "shots").mkdir()
+    (data_root / "init.txt").write_text(f"map_name levels\\{level}\\{level}\n" if level else "")
+    environment = scene_environment(data_root)
     environment.update(SETTINGS.get(name, {}))
     if level:
         # (exit_after only in case the scene never comes)
