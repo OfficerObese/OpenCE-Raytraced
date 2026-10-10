@@ -115,6 +115,7 @@ Give these options to `configure.py`:
 | `--pgo=off` | No profile-guided optimization. |
 | `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
 | `--profile` | A profiling build. It records CPU times. Refer to "Profiling builds". |
+| `--windows-renderer d3d12` | The Windows build draws with Direct3D 12, in a 64-bit program of its own (`halo_renderer.exe`), and uses no OpenGL. Refer to [port/windows/README.md](port/windows/README.md#the-direct3d-12-renderer). The default is `opengl`. |
 
 Without `--portable`, the Linux and Windows builds use all the instructions
 of the processor that builds them (`-march=native`). Such a build does not

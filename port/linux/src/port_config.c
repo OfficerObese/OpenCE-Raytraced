@@ -500,6 +500,11 @@ static const struct config_setting config_settings[] =
 		"Run without a window, drawing nothing." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
+	{ "debug.d3d12_debug_layer", _config_boolean, "false", "HALO_D3D12_DEBUG_LAYER", _environment_set_is_true,
+		_platform_windows,
+		"The Direct3D 12 renderer (a build configured with --windows-renderer\n"
+		"d3d12): check its work with the D3D12 debug layer, which writes its\n"
+		"errors and warnings to halo_renderer.log; slower." },
 	{ "debug.menu_open", _config_string, "\"\"", "HALO_MENU_OPEN", _environment_value, _platform_all,
 		"Start on this screen of the menus (port/assets/menus) instead of the main\n"
 		"menu, a player profile being edited; empty for the main menu." },

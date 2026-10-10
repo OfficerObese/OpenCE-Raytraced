@@ -848,6 +848,9 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 
 		SDL_GetWindowSizeInPixels(platform_window, &pixel_width, &pixel_height);
 		error[0] = '\0';
+		/* (the renderer reads it from its environment, which it inherits) */
+		if (config_boolean("debug.d3d12_debug_layer"))
+			SDL_setenv_unsafe("HALO_D3D12_DEBUG_LAYER", "1", 1);
 		if (!window || !xgpu_host_start(window, (unsigned long)pixel_width, (unsigned long)pixel_height, error,
 			sizeof(error)))
 		{

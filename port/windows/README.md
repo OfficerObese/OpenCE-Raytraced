@@ -7,7 +7,8 @@ next to it. You must build on Windows.
 The Windows build uses the platform layer of the Linux build
 (`port/linux/src`). The graphics, the sound, the input, the settings and
 the multiplayer functions are the same as on Linux. Refer to
-[port/linux/README.md](../linux/README.md).
+[port/linux/README.md](../linux/README.md). A build can also draw with
+Direct3D 12 instead of OpenGL: refer to "The Direct3D 12 renderer".
 
 ## Requirements
 
@@ -110,6 +111,39 @@ prevents this:
 MSVC gives file scope to a structure tag in a prototype. clang does not.
 Thus the build also includes the declarations of the Linux build
 (`build/windows/halo_msvc_tags.h`).
+
+## The Direct3D 12 renderer
+
+`python configure.py --windows-renderer d3d12` makes a build that draws with
+Direct3D 12 and uses no OpenGL. The default is still OpenGL
+(`--windows-renderer opengl`).
+
+The game stays 32-bit, because its data contains 32-bit pointers. The
+renderer is a second program, `build/windows/halo_renderer.exe`, for 64-bit
+x86. The game starts it and sends it what to draw:
+
+| Part | Files | Contents |
+| --- | --- | --- |
+| The device of the game | `d3d12/d3d8_d3d12.c` | The Xbox Direct3D 8 device. It makes the same decisions as `port/linux/src/d3d8_gl.c` (the size of the screen, the render targets, the copy of the contiguous memory, the visibility tests), and sends messages instead of OpenGL calls. |
+| The messages | `d3d12/xgpu_protocol.h`, `d3d12/xgpu_ring.c` | A ring of messages in memory that the two programs share. The game copies all the data that the GPU uses into the ring. The renderer does not read the memory of the game. |
+| The shaders | `d3d12/xgpu_hlsl.c` | The GLSL of `port/linux/src/nv2a_vsh.c` and `nv2a_psh.c`, changed to HLSL. The renderer compiles the HLSL with `D3DCompile`. |
+| The textures | `d3d12/xgpu_gl_textures.c` | The texture cache, the high-res HUD and text, and the art of the menus (`port/linux/src`) keep their twelve OpenGL texture calls. These calls send the textures to the renderer. |
+| The window | `d3d12/win32_renderer_host.c`, `d3d12/win32_dcomp.cpp` | The game starts the renderer in a job object, so the renderer stops when the game stops. The window of the game shows a DirectComposition surface, and the renderer presents into it. Thus the window of the game keeps its input. |
+| The renderer | `renderer/*.c` | Direct3D 12: the device, the textures and the render targets, the pipelines, the draws, the visibility tests, FXAA and SMAA (`port/third_party/smaa`), the presentation and the screenshots. |
+
+The renderer writes its log to `halo_renderer.log` next to `halo.exe` (or
+to the file that the environment variable `HALO_RENDERER_LOG` gives). The
+setting `debug.d3d12_debug_layer` turns on the D3D12 debug layer, which
+writes its errors and warnings to that log.
+
+Three tests compare the renderer with the OpenGL build. They need the game
+data:
+
+| Test | What it does |
+| --- | --- |
+| `python tools/test_d3d12_parity.py compare --game <folder>` | Plays fixed scenes (the main menu, five levels, and each setting that changes the drawing: MSAA, SSAA, FXAA, SMAA, lighting for each pixel) and compares each frame with the frame of the OpenGL build (`record` makes those frames, with `--exe` an OpenGL build). The game skips the cutscenes, ignores the mouse and the keyboard, plays no sound and uses no internet play (`debug.scene_test`). |
+| `python tools/test_hlsl_shaders.py` | Changes the GLSL of each shader that the game made (`debug.gpu_dump_shaders`) to HLSL and compiles it. |
+| `python tools/test_d3d12_performance.py --game <folder>` | Counts the frames that each build draws each second, with no vsync and no limit. |
 
 ## Crash reports
 
