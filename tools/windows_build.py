@@ -148,7 +148,8 @@ def windows_configure_inputs() -> List[Path]:
             LINUX_DIR / "game", *hud_configure_inputs()]
 
 
-# The Direct3D 12 renderer (configure.py --windows-renderer d3d12): the
+# The Direct3D 12 renderer (configure.py --windows-renderer d3d12, the
+# default): the
 # game's side of it (port/windows/d3d12), built into halo.exe in place of the
 # OpenGL device and its GL entry points, and the renderer process
 # (port/windows/renderer), 64-bit, halo_renderer.exe.
@@ -159,7 +160,7 @@ RENDERER_LIBRARIES = ["d3d12", "dxgi", "dxguid", "d3dcompiler", "windowscodecs",
 
 
 def windows_d3d12(sln: Any) -> bool:
-    return getattr(sln, "windows_renderer", "opengl") == "d3d12"
+    return getattr(sln, "windows_renderer", "d3d12") == "d3d12"
 
 
 def _quote(path: Any) -> str:

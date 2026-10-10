@@ -1,22 +1,25 @@
 # Windows
 
 `ninja windows` compiles the game with clang for 32-bit x86 Windows. The
-result is a native executable, `build/windows/halo.exe`, with `SDL3.dll`
-next to it. You must build on Windows.
+result is a native executable, `build/windows/halo.exe`, with the renderer
+`halo_renderer.exe` (64-bit x86) and `SDL3.dll` next to it. You must build
+on Windows.
 
 The Windows build uses the platform layer of the Linux build
-(`port/linux/src`). The graphics, the sound, the input, the settings and
-the multiplayer functions are the same as on Linux. Refer to
-[port/linux/README.md](../linux/README.md). A build can also draw with
-Direct3D 12 instead of OpenGL: refer to "The Direct3D 12 renderer".
+(`port/linux/src`). The sound, the input, the settings and the multiplayer
+functions are the same as on Linux. Refer to
+[port/linux/README.md](../linux/README.md). The graphics are drawn with
+Direct3D 12 instead of OpenGL, and look the same: refer to "The Direct3D 12
+renderer". The game needs Windows 10 or 11 and a GPU with Direct3D 12
+(feature level 11_0).
 
 ## Requirements
 
 You do not need the Xbox SDK.
 
 - Visual Studio or the Visual Studio Build Tools, with the C++ workload.
-  The build uses the 32-bit (x86) MSVC libraries and a Windows 10 or 11
-  SDK. It does not use the MSVC compiler.
+  The build uses the 32-bit (x86) MSVC libraries for the game, the 64-bit
+  (x64) MSVC libraries for the renderer, and a Windows 10 or 11 SDK. It does not use the MSVC compiler.
 - LLVM (clang and lld), Python 3 and ninja in the `PATH`. For example,
   enter `scoop install llvm python ninja`.
 - A network connection for the first build. `configure.py` downloads the
@@ -114,9 +117,10 @@ Thus the build also includes the declarations of the Linux build
 
 ## The Direct3D 12 renderer
 
-`python configure.py --windows-renderer d3d12` makes a build that draws with
-Direct3D 12 and uses no OpenGL. The default is still OpenGL
-(`--windows-renderer opengl`).
+The Windows build draws with Direct3D 12 and uses no OpenGL.
+`python configure.py --windows-renderer opengl` makes a build that draws
+with OpenGL 4.5 in `halo.exe` instead, as the Linux build does. The tests
+below compare the two.
 
 The game stays 32-bit, because its data contains 32-bit pointers. The
 renderer is a second program, `build/windows/halo_renderer.exe`, for 64-bit

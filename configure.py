@@ -76,10 +76,10 @@ parser.add_argument(
 parser.add_argument(
     "--windows-renderer",
     choices=["opengl", "d3d12"],
-    default="opengl",
-    help="the Windows build's renderer: opengl (the default) draws with OpenGL 4.5 in the game's process; "
-    "d3d12 draws with Direct3D 12 in a 64-bit process of its own, halo_renderer.exe, and uses no OpenGL "
-    "(port/windows/README.md)",
+    default="d3d12",
+    help="the Windows build's renderer: d3d12 (the default) draws with Direct3D 12 in a 64-bit process of "
+    "its own, halo_renderer.exe, and uses no OpenGL (port/windows/README.md); opengl draws with OpenGL 4.5 "
+    "in the game's process",
 )
 parser.add_argument(
     "--android-ndk",

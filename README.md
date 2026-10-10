@@ -59,7 +59,7 @@ Each platform has its own instructions:
 | Platform | Instructions |
 | --- | --- |
 | Linux (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/linux/README.md](port/linux/README.md) |
-| Windows (32-bit x86 executable, OpenGL 4.5, SDL3) | [port/windows/README.md](port/windows/README.md) |
+| Windows (32-bit x86 executable and a 64-bit renderer, Direct3D 12, SDL3) | [port/windows/README.md](port/windows/README.md) |
 | Android (arm64 app, OpenGL ES 3, SDL3) | [port/android/README.md](port/android/README.md) |
 
 The Linux README also gives the controls, the settings and the multiplayer
@@ -93,7 +93,7 @@ To build the game:
 | Target | Result |
 | --- | --- |
 | `ninja linux` | `build/linux/halo` |
-| `ninja windows` (on Windows) | `build/windows/halo.exe` and `SDL3.dll` |
+| `ninja windows` (on Windows) | `build/windows/halo.exe`, `halo_renderer.exe` and `SDL3.dll` |
 | `ninja android_apk` | `port/android/app/build/outputs/apk/debug/app-debug.apk` |
 
 If you enter `ninja` without a target, ninja builds the game for the
@@ -115,7 +115,7 @@ Give these options to `configure.py`:
 | `--pgo=off` | No profile-guided optimization. |
 | `--pgo=train` | Records a new optimization profile. Refer to "Optimization profiles". |
 | `--profile` | A profiling build. It records CPU times. Refer to "Profiling builds". |
-| `--windows-renderer d3d12` | The Windows build draws with Direct3D 12, in a 64-bit program of its own (`halo_renderer.exe`), and uses no OpenGL. Refer to [port/windows/README.md](port/windows/README.md#the-direct3d-12-renderer). The default is `opengl`. |
+| `--windows-renderer opengl` | The Windows build draws with OpenGL 4.5 in `halo.exe`, as the Linux build does. The default is `d3d12`: the build draws with Direct3D 12, in a 64-bit program of its own (`halo_renderer.exe`), and uses no OpenGL. Refer to [port/windows/README.md](port/windows/README.md#the-direct3d-12-renderer). |
 
 Without `--portable`, the Linux and Windows builds use all the instructions
 of the processor that builds them (`-march=native`). Such a build does not
