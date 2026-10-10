@@ -74,6 +74,8 @@ void network_distributed_item_statistics(long *creates, long *deletes, long *fai
 void network_damage_statistics(long *sent_reports, long *dealt_reports, long *rejected_reports, long *replayed_events);
 /* xinput_sdl.c's */
 void test_input_hold_action(int hold);
+/* scene_test.c's */
+void scene_test_update(boolean main_menu_loaded);
 
 enum
 {
@@ -727,6 +729,8 @@ void network_test_update(
 	boolean main_menu_loaded,
 	real seconds)
 {
+	/* (the renderer comparison's fixed scenes, from the same place) */
+	scene_test_update(main_menu_loaded);
 	if (!network_test.checked)
 		network_test_read_settings();
 	if (network_test.mode == _network_test_off)

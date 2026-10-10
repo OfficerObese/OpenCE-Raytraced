@@ -1067,6 +1067,29 @@ GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *
 	return texture_entry_result(entry, target, description);
 }
 
+GLuint xgpu_texture_copy(const DWORD *resource, const D3DCOLOR *palette, GLenum *target)
+{
+	DWORD data = resource[1], format_word = resource[3], size_word = resource[4];
+	struct xgpu_texture_description description;
+	unsigned long address, size;
+	GLuint texture = 0;
+
+	xgpu_texture_describe(format_word, size_word, &description);
+	*target = description.cube_map ? GL_TEXTURE_CUBE_MAP : description.depth > 1 ? GL_TEXTURE_3D : GL_TEXTURE_2D;
+	if ((((format_word & D3DFORMAT_FORMAT_MASK) >> D3DFORMAT_FORMAT_SHIFT) == 0x0b && !palette) ||
+		!texture_size_supported(&description))
+	{
+		return 0;
+	}
+	address = (unsigned long)PLATFORM_PHYSICAL_TO_VIRTUAL(data);
+	size = xgpu_texture_face_size(&description) * (description.cube_map ? 6 : 1);
+	if (!platform_is_contiguous((void *)address) || !platform_is_contiguous((void *)(address + size - 1)))
+		return 0;
+	glGenTextures(1, &texture);
+	upload(texture, *target, &description, (const unsigned char *)address, palette, custom_edition_texels_order(address));
+	return texture;
+}
+
 void xgpu_texture_cache_begin_frame(void)
 {
 	unsigned long index;

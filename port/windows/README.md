@@ -1,21 +1,28 @@
 # Windows
 
 `ninja windows` compiles the game with clang for 32-bit x86 Windows. The
-result is a native executable, `build/windows/halo.exe`, with `SDL3.dll`
-next to it. You must build on Windows.
+result is a native executable, `build/windows/halo.exe`, with the renderer
+`halo_renderer.exe` (64-bit x86) and `SDL3.dll` next to it. You must build
+on Windows.
 
 The Windows build uses the platform layer of the Linux build
-(`port/linux/src`). The graphics, the sound, the input, the settings and
-the multiplayer functions are the same as on Linux. Refer to
-[port/linux/README.md](../linux/README.md).
+(`port/linux/src`). The sound, the input, the settings and the multiplayer
+functions are the same as on Linux. Refer to
+[port/linux/README.md](../linux/README.md). The graphics are drawn with
+Direct3D 12 instead of OpenGL, and look the same: refer to "The Direct3D 12
+renderer". The game needs Windows 10 or 11 and a GPU with Direct3D 12
+(feature level 11_0).
 
 ## Requirements
 
 You do not need the Xbox SDK.
 
 - Visual Studio or the Visual Studio Build Tools, with the C++ workload.
-  The build uses the 32-bit (x86) MSVC libraries and a Windows 10 or 11
-  SDK. It does not use the MSVC compiler.
+  The build uses the 32-bit (x86) MSVC libraries for the game, the 64-bit
+  (x64) MSVC libraries for the renderer, and a Windows 10 or 11 SDK. The
+  SDK's `dxc.exe` compiles the shaders of the path tracer (the environment
+  variable `HALO_DXC` can name another). Without it, the renderer is built
+  without the path tracer. It does not use the MSVC compiler.
 - LLVM (clang and lld), Python 3 and ninja in the `PATH`. For example,
   enter `scoop install llvm python ninja`.
 - A network connection for the first build. `configure.py` downloads the
@@ -110,6 +117,89 @@ prevents this:
 MSVC gives file scope to a structure tag in a prototype. clang does not.
 Thus the build also includes the declarations of the Linux build
 (`build/windows/halo_msvc_tags.h`).
+
+## The Direct3D 12 renderer
+
+The Windows build draws with Direct3D 12 and uses no OpenGL.
+`python configure.py --windows-renderer opengl` makes a build that draws
+with OpenGL 4.5 in `halo.exe` instead, as the Linux build does. The tests
+below compare the two.
+
+The game stays 32-bit, because its data contains 32-bit pointers. The
+renderer is a second program, `build/windows/halo_renderer.exe`, for 64-bit
+x86. The game starts it and sends it what to draw:
+
+| Part | Files | Contents |
+| --- | --- | --- |
+| The device of the game | `d3d12/d3d8_d3d12.c` | The Xbox Direct3D 8 device. It makes the same decisions as `port/linux/src/d3d8_gl.c` (the size of the screen, the render targets, the copy of the contiguous memory, the visibility tests), and sends messages instead of OpenGL calls. |
+| The messages | `d3d12/xgpu_protocol.h`, `d3d12/xgpu_ring.c` | A ring of messages in memory that the two programs share. The game copies all the data that the GPU uses into the ring. The renderer does not read the memory of the game. |
+| The shaders | `d3d12/xgpu_hlsl.c` | The GLSL of `port/linux/src/nv2a_vsh.c` and `nv2a_psh.c`, changed to HLSL. The renderer compiles the HLSL with `D3DCompile`. |
+| The textures | `d3d12/xgpu_gl_textures.c` | The texture cache, the high-res HUD and text, and the art of the menus (`port/linux/src`) keep their twelve OpenGL texture calls. These calls send the textures to the renderer. |
+| The window | `d3d12/win32_renderer_host.c`, `d3d12/win32_dcomp.cpp` | The game starts the renderer in a job object, so the renderer stops when the game stops. The window of the game shows a DirectComposition surface, and the renderer presents into it. Thus the window of the game keeps its input. |
+| The renderer | `renderer/*.c` | Direct3D 12: the device, the textures and the render targets, the pipelines, the draws, the visibility tests, FXAA and SMAA (`port/third_party/smaa`), the presentation and the screenshots. |
+
+The renderer writes its log to `halo_renderer.log` next to `halo.exe` (or
+to the file that the environment variable `HALO_RENDERER_LOG` gives). The
+setting `debug.d3d12_debug_layer` turns on the D3D12 debug layer, which
+writes its errors and warnings to that log.
+
+When something goes wrong with the renderer:
+
+- **The GPU is lost.** The driver can reset the GPU after a hang, or the
+  driver can be updated while the game runs. The renderer then makes its
+  device again and restores all the textures, the render targets and the
+  copy of the contiguous memory. It keeps a copy of each in its own memory
+  for this. The frame being drawn is lost, and the game plays on. The log of
+  the game says `the renderer lost the GPU and made it again`. The setting
+  `debug.scene_test_device_reset` tests this.
+- **The renderer crashes.** It writes `halo_renderer.dmp` (a minidump) next
+  to its log. The game then shows the error and stops.
+- **The renderer stops.** If the renderer exits, or draws no frame for 30
+  seconds, the game shows the reason and stops.
+- **The renderer cannot start.** The game shows the reason and stops.
+
+### The path tracer
+
+The setting `display.path_tracing` (off by default) is to draw the 3D world
+with a path tracer instead: rays find what each pixel sees and the light
+that reaches it, from the sun, the sky, glowing surfaces and the lights of
+the game. The lightmaps that the Xbox game uses are not used. The path
+tracer is under construction. So far:
+
+- The renderer checks that the GPU can trace rays (DirectX Raytracing 1.1)
+  and that its ray tracing gives the right results, and writes the result
+  to its log.
+- When the level's structure (its BSP) changes, the game sends it to the
+  renderer: the surfaces in world space, their shaders and the bitmaps of
+  the shaders (`port/linux/game/path_tracing.c`, `d3d12/xgpu_scene.c`).
+  The lightmaps are not sent. The renderer keeps it
+  (`renderer/renderer_scene.c`) and builds its acceleration structures.
+- Each window sends its camera, and the game's passes send their
+  beginnings and ends. The renderer traces a ray from the camera through
+  each pixel, and `debug.path_tracing_view` shows what the rays find.
+  The objects are not traced yet.
+
+`python tools/test_path_tracing.py depth_parity --game <folder>` plays the
+level scenes with the `depth_parity` view and the D3D12 debug layer. In
+each scene, the surfaces that the rays find must be where the game draws
+its own on at least 99% of the pixels that can be compared. The pixels
+behind the game's objects and those of surfaces the game does not draw
+(its visibility culls some, and a mirror shows a reflection) are not
+compared. `a30` starts inside the lifeboat, an object: it passes when the
+objects are traced.
+
+The shaders of the path tracer (`renderer/shaders/*.hlsl`, Shader Model
+6.5) are compiled when the renderer is built, and are part of
+`halo_renderer.exe`.
+
+Three tests compare the renderer with the OpenGL build. They need the game
+data:
+
+| Test | What it does |
+| --- | --- |
+| `python tools/test_d3d12_parity.py compare --game <folder>` | Plays fixed scenes (the main menu, five levels, each setting that changes the drawing: MSAA, SSAA, FXAA, SMAA, lighting for each pixel, and two scenes where the renderer loses its GPU device) and compares each frame with the frame of the OpenGL build (`record` makes those frames, with `--exe` an OpenGL build). The game skips the cutscenes, ignores the mouse and the keyboard, plays no sound and uses no internet play (`debug.scene_test`). |
+| `python tools/test_hlsl_shaders.py` | Changes the GLSL of each shader that the game made (`debug.gpu_dump_shaders`) to HLSL and compiles it. |
+| `python tools/test_d3d12_performance.py --game <folder>` | Counts the frames that each build draws each second, with no vsync and no limit. |
 
 ## Crash reports
 

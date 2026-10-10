@@ -31,7 +31,9 @@ OUTPUTS = {
     # (and the SDL3 the portable build brings, tools/linux_build.py, with its
     # zlib license, as the release carries the other libraries')
     "linux": ["build/linux/halo", "build/linux/libSDL3.so.0", "build/linux/SDL3-LICENSE.txt"],
-    "windows": ["build/windows/halo.exe", "build/windows/SDL3.dll"],
+    # (and the Direct3D 12 renderer, a 64-bit program of its own that halo.exe
+    # starts: port/windows/README.md)
+    "windows": ["build/windows/halo.exe", "build/windows/halo_renderer.exe", "build/windows/SDL3.dll"],
     "android": [],  # the APK, below
 }
 APKS = {
@@ -89,7 +91,7 @@ def main() -> int:
         shutil.copy2(ROOT / output, dist)
         print(f"{output} -> {dist.relative_to(ROOT)}", flush=True)
     if args.platform == "windows":
-        # the symbols of halo.exe and SDL3.dll, apart (players do not need
+        # the symbols of halo.exe, halo_renderer.exe and SDL3.dll, apart (players do not need
         # them): the workflow uploads them to Sentry, which turns the crash
         # reports' minidumps into function names and lines
         # (port/windows/src/win32_crash.c), and tools/symbolize_crash.py
@@ -98,7 +100,7 @@ def main() -> int:
         if symbols.exists():
             shutil.rmtree(symbols)
         symbols.mkdir(parents=True)
-        for pdb in [ROOT / "build/windows/halo.pdb", *sorted((ROOT / "build/windows/third_party").glob("SDL3-*/lib/x86/SDL3.pdb"))]:
+        for pdb in [ROOT / "build/windows/halo.pdb", ROOT / "build/windows/halo_renderer.pdb", *sorted((ROOT / "build/windows/third_party").glob("SDL3-*/lib/x86/SDL3.pdb"))]:
             shutil.copy2(pdb, symbols)
             print(f"{pdb.relative_to(ROOT)} -> {symbols.relative_to(ROOT)}", flush=True)
     # the disc image readers (port/linux/src/xiso.c, and the Android app's

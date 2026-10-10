@@ -74,6 +74,14 @@ parser.add_argument(
     help="profile-guided optimisation from this profile instead",
 )
 parser.add_argument(
+    "--windows-renderer",
+    choices=["opengl", "d3d12"],
+    default="d3d12",
+    help="the Windows build's renderer: d3d12 (the default) draws with Direct3D 12 in a 64-bit process of "
+    "its own, halo_renderer.exe, and uses no OpenGL (port/windows/README.md); opengl draws with OpenGL 4.5 "
+    "in the game's process",
+)
+parser.add_argument(
     "--android-ndk",
     type=str,
     help="Android NDK for `ninja android` (default: ANDROID_NDK_HOME, or the newest under the Android SDK)",
@@ -100,6 +108,7 @@ sln = SimpleNamespace(
     port_portable=args.portable,
     port_pgo=args.pgo,
     port_pgo_profile=args.pgo_profile,
+    windows_renderer=args.windows_renderer,
     android_ndk=args.android_ndk,
     android_guest_cc=args.android_guest_cc,
 )

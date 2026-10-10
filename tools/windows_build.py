@@ -144,7 +144,46 @@ def _load_config() -> Dict[str, Any]:
 
 def windows_configure_inputs() -> List[Path]:
     """Files whose change must re-run configure.py."""
-    return [Path(__file__), PORT_CONFIG, PORT_DIR / "src", LINUX_DIR / "src", LINUX_DIR / "game", *hud_configure_inputs()]
+    return [Path(__file__), PORT_CONFIG, PORT_DIR / "src", PORT_DIR / "d3d12", PORT_DIR / "renderer",
+            PORT_DIR / "renderer" / "shaders", LINUX_DIR / "src",
+            LINUX_DIR / "game", *hud_configure_inputs()]
+
+
+# The Direct3D 12 renderer (configure.py --windows-renderer d3d12, the
+# default): the
+# game's side of it (port/windows/d3d12), built into halo.exe in place of the
+# OpenGL device and its GL entry points, and the renderer process
+# (port/windows/renderer), 64-bit, halo_renderer.exe.
+D3D12_DIR = PORT_DIR / "d3d12"
+RENDERER_DIR = PORT_DIR / "renderer"
+D3D12_REPLACED_SOURCES = {"d3d8_gl.c", "gl_functions.c", "xgpu_post.c"}
+RENDERER_LIBRARIES = ["d3d12", "dxgi", "dxguid", "d3dcompiler", "windowscodecs", "ole32", "user32", "dbghelp"]
+# the path tracer's shaders (Shader Model 6.5, inline ray tracing), compiled
+# by the Windows SDK's dxc.exe, which D3DCompile cannot do, and embedded
+RENDERER_SHADER_DIR = RENDERER_DIR / "shaders"
+WINDOWS_KITS_BIN = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
+
+
+def find_dxc() -> Optional[Path]:
+    """dxc.exe of the newest Windows SDK (HALO_DXC names another); None if
+    there is none, and the renderer is built without the path tracer"""
+    named = os.environ.get("HALO_DXC")
+    if named:
+        return Path(named) if Path(named).is_file() else None
+    found = shutil.which("dxc")
+    if found:
+        return Path(found)
+    if WINDOWS_KITS_BIN.is_dir():
+        for version in sorted(WINDOWS_KITS_BIN.glob("10.*"), key=lambda path: tuple(
+                int(part) for part in path.name.split(".") if part.isdigit()), reverse=True):
+            dxc = version / "x64" / "dxc.exe"
+            if dxc.is_file():
+                return dxc
+    return None
+
+
+def windows_d3d12(sln: Any) -> bool:
+    return getattr(sln, "windows_renderer", "d3d12") == "d3d12"
 
 
 def _quote(path: Any) -> str:
@@ -327,9 +366,11 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     abi = " ".join(WINDOWS_ABI_FLAGS + [march_flag(sln)] + configuration_defines(sln)
                    + ([] if getattr(sln, "port_release", False) else ["-fstack-protector-strong"]))
     sdl_include = SDL_DIR / "include"
+    d3d12 = windows_d3d12(sln)
     libs = " ".join(
         [_quote(SDL_DIR / "lib" / "x86" / "SDL3.lib")]
         + [f"-l{lib}" for lib in config.get("libraries", [])]
+        + (["-ldcomp"] if d3d12 else [])
     )
     base_ldflags = [
         "--target=i686-pc-windows-msvc",
@@ -414,6 +455,7 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             "-Isource -Isource/cseries",
             f"-I{_quote(sdl_include)}",
             f"-I{XDK_INCLUDE}",
+            *([f"-DHALO_D3D12 -I{D3D12_DIR}"] if d3d12 else []),
         ])
         win32_cflags = " ".join([
             abi,
@@ -423,6 +465,17 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             f"-I{_quote(sdl_include)}",
         ])
         replaced = set(config.get("replaced_platform_sources", []))
+        if d3d12:
+            replaced |= D3D12_REPLACED_SOURCES
+            # the game's side of the renderer: as port/windows/src, win32_*
+            # with the Windows SDK and the rest with the Xbox SDK's names
+            for source in sorted(D3D12_DIR.glob("*.c")):
+                add_object(source, f"{win32_cflags} -I{D3D12_DIR}" if source.name.startswith("win32_")
+                           else platform_cflags)
+            # (C++: dcomp.h has no C interface)
+            for source in sorted(D3D12_DIR.glob("*.cpp")):
+                add_object(source, " ".join([abi, "-std=c++17", "-DWIN32_LEAN_AND_MEAN", "-DNOMINMAX",
+                                             "-D_WIN32_WINNT=0x0A00", "-Wall", f"-I{D3D12_DIR}"]))
         for source in sorted(linux_platform.glob("*.c")):
             if source.name in replaced:
                 continue
@@ -534,5 +587,67 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
     # internet play's MQTT brokers, a file beside the game (network.brokers_file)
     brokers = BUILD / "brokers.txt"
     n.build(outputs=brokers, rule="windows_copy", inputs=Path("port/assets/network/brokers.txt"))
-    n.build(outputs="windows", rule="phony", inputs=[output, sdl_dll, brokers])
+    outputs = [output, sdl_dll, brokers]
+    if d3d12:
+        outputs.append(renderer_build(n, sln))
+    n.build(outputs="windows", rule="phony", inputs=outputs)
     n.newline()
+
+
+def renderer_build(n: Writer, sln: Any) -> Path:
+    """the D3D12 renderer process, 64-bit: build/windows/halo_renderer.exe"""
+    obj_dir = BUILD / "renderer_obj"
+    output = BUILD / "halo_renderer.exe"
+    cflags = " ".join([
+        "--target=x86_64-pc-windows-msvc", "-std=gnu11", OPTIMISATION, "-g", "-gcodeview", "-Wall",
+        "-Wno-unused-function", "-D_CRT_SECURE_NO_WARNINGS",
+    ])
+    objects: List[Path] = []
+    headers = sorted(RENDERER_DIR.glob("*.h")) + [D3D12_DIR / "xgpu_protocol.h", D3D12_DIR / "xgpu_hlsl.h"]
+    sources = sorted(RENDERER_DIR.glob("*.c"))
+
+    # the path tracer's shaders, one compute shader (entry point main) a
+    # file, into renderer_shaders.c; without dxc.exe, none, and the renderer
+    # says the path tracer is not available
+    dxc = find_dxc()
+    shaders = sorted(RENDERER_SHADER_DIR.glob("*.hlsl")) if dxc else []
+    shader_includes = sorted(RENDERER_SHADER_DIR.glob("*.hlsli"))
+    if dxc:
+        n.rule(
+            name="renderer_dxc",
+            command=f'"{dxc}" -nologo -T cs_6_5 -E main -O3 -WX -HV 2021 -Qstrip_debug -Qstrip_reflect -Fo $out $in',
+            description="DXC $out",
+        )
+    else:
+        print("the path tracer is not built: no dxc.exe (the Windows SDK's; or set HALO_DXC)", file=sys.stderr)
+    compiled: List[Path] = []
+    for shader in shaders:
+        dxil = obj_dir / "shaders" / shader.with_suffix(".dxil").name
+        compiled.append(dxil)
+        n.build(outputs=dxil, rule="renderer_dxc", inputs=shader, implicit=shader_includes)
+    n.rule(
+        name="renderer_embed_dxil",
+        command="$python tools/embed_dxil.py $out $in",
+        description="EMBED DXIL $out",
+        restat=True,
+    )
+    embedded = BUILD / "generated" / "renderer_shaders.c"
+    n.build(outputs=embedded, rule="renderer_embed_dxil", inputs=compiled, implicit=[Path("tools/embed_dxil.py")])
+    shader_flags = " -DRENDERER_PATH_TRACER_SHADERS" if dxc else ""
+    obj = obj_dir / "renderer_shaders.o"
+    objects.append(obj)
+    n.build(outputs=obj, rule="windows_cc", inputs=embedded, variables={"cflags": cflags})
+
+    for source in sources:
+        obj = obj_dir / source.with_suffix(".o").name
+        objects.append(obj)
+        n.build(outputs=obj, rule="windows_cc", inputs=source, implicit=headers,
+                variables={"cflags": cflags + shader_flags})
+    ldflags = ["--target=x86_64-pc-windows-msvc", "-fuse-ld=lld", "-g"]
+    if getattr(sln, "port_release", False):
+        ldflags += ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
+    else:
+        ldflags += ["-Wl,/SUBSYSTEM:CONSOLE"]
+    n.build(outputs=output, rule="windows_link", inputs=objects,
+            variables={"ldflags": " ".join(ldflags), "libs": " ".join(f"-l{lib}" for lib in RENDERER_LIBRARIES)})
+    return output

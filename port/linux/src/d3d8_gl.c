@@ -5157,3 +5157,61 @@ HRESULT WINAPI D3DDevice_PersistDisplay(void)
 {
 	return S_OK;
 }
+
+/* ---------- display.path_tracing: none with OpenGL (halo_path_tracing.h;
+the Direct3D 12 renderer's, port/windows/d3d12/xgpu_scene.c) */
+
+#include "halo_path_tracing.h"
+
+int platform_path_tracing_active(void)
+{
+	return FALSE;
+}
+
+void platform_path_tracing_begin_map(void)
+{
+}
+
+void platform_path_tracing_scene(const struct path_tracing_vertex *vertices, unsigned long vertex_count,
+	const unsigned short *indices, unsigned long index_count, const struct path_tracing_geometry *geometries,
+	unsigned long geometry_count, const struct path_tracing_material *materials, unsigned long material_count,
+	unsigned long surface_count)
+{
+	(void)surface_count;
+	(void)vertices;
+	(void)vertex_count;
+	(void)indices;
+	(void)index_count;
+	(void)geometries;
+	(void)geometry_count;
+	(void)materials;
+	(void)material_count;
+}
+
+unsigned long platform_path_tracing_texture(const void *hardware_format, const unsigned long *palette)
+{
+	(void)hardware_format;
+	(void)palette;
+	return 0;
+}
+
+void platform_path_tracing_camera(const float world_to_clip[4][4], const float position[3],
+	const float viewport[4], int primary)
+{
+	(void)world_to_clip;
+	(void)position;
+	(void)viewport;
+	(void)primary;
+}
+
+void platform_path_tracing_pass(long pass, int begin)
+{
+	(void)pass;
+	(void)begin;
+}
+
+void platform_path_tracing_drawn(unsigned long const *surfaces, unsigned long count)
+{
+	(void)surfaces;
+	(void)count;
+}
