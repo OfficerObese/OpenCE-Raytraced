@@ -15,6 +15,8 @@ presents into the DirectComposition surface the game's window shows.
 	renderer_draw.c       draw state, draws, clears, visibility tests
 	renderer_output.c     presentation, its own passes, screenshots
 	renderer_post.c       anti-aliasing (FXAA, SMAA)
+	renderer_path_tracer.c  display.path_tracing (its shaders: the shaders folder)
+	renderer_scene.c      the path tracer's scene
 
 One thread does everything; nothing here is called from elsewhere.
 */
@@ -117,6 +119,10 @@ void renderer_output_lost(void);
 void renderer_output_restore(void);
 void renderer_post_lost(void);
 void renderer_post_restore(void);
+void renderer_path_tracer_lost(void);
+void renderer_path_tracer_restore(void);
+void renderer_scene_lost(void);
+void renderer_scene_restore(void);
 /* the debug layer's messages since last asked, into the log (nothing without
 the layer) */
 void renderer_debug_messages(void);
@@ -155,6 +161,8 @@ struct renderer_descriptor renderer_rtv_allocate(void);
 void renderer_rtv_free(struct renderer_descriptor descriptor);
 struct renderer_descriptor renderer_dsv_allocate(void);
 void renderer_dsv_free(struct renderer_descriptor descriptor);
+/* the view heap's first descriptor, for tables of every texture */
+D3D12_GPU_DESCRIPTOR_HANDLE renderer_view_gpu_start(void);
 D3D12_CPU_DESCRIPTOR_HANDLE renderer_sampler_cpu(uint32_t index);
 D3D12_GPU_DESCRIPTOR_HANDLE renderer_sampler_gpu(uint32_t index);
 #define RENDERER_SAMPLER_LIMIT 2048
@@ -248,6 +256,8 @@ void renderer_visibility_resolve(uint32_t frame);
 void renderer_visibility_collect(void);
 /* the bound state is unknown: the next draw sets all of it again */
 void renderer_draw_invalidate(void);
+/* the draw state the game sent last (NULL before any) */
+const struct xgpu_draw_state *renderer_draw_state_current(void);
 /* a visibility test is running: a query begins and ends in one command list,
 so nothing submits until it ends */
 extern BOOL renderer_visibility_active;
@@ -271,5 +281,61 @@ void renderer_anti_alias_prepare(const struct xgpu_anti_alias_prepare *prepare, 
 void renderer_screenshot(const struct xgpu_screenshot *screenshot);
 /* screenshots of finished frames, written */
 void renderer_screenshots_collect(void);
+
+/* ---------- renderer_path_tracer.c */
+
+/* whether the GPU can trace rays, into the shared header */
+void renderer_path_tracer_initialize(void);
+/* display.path_tracing, as the game sends it */
+void renderer_path_tracer_configure(BOOL wanted);
+/* the setting is on and the GPU's ray tracing works */
+BOOL renderer_path_tracing(void);
+/* debug.path_tracing_view */
+void renderer_path_tracer_view(uint32_t view);
+/* one of the game's passes begins or ends */
+void renderer_path_tracer_pass(const struct xgpu_pass *pass);
+/* an acceleration structure built from inputs into the command list (its
+scratch released once the GPU is past it); read after a UAV barrier, which
+it records */
+ID3D12Resource *renderer_acceleration_structure_build(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *inputs);
+
+/* ---------- renderer_scene.c */
+
+/* a material as the trace reads it (shaders/pt_common.hlsli) */
+#define RENDERER_SCENE_NO_TEXTURE 0xffffffffu
+struct renderer_scene_gpu_material
+{
+	/* the view heap's descriptors of the base, primary detail, secondary
+	detail, micro detail and bump maps */
+	uint32_t maps[5];
+	uint32_t flags;
+	/* detail function, micro detail function, environment type: a byte each */
+	uint32_t functions;
+	uint32_t reserved;
+	/* primary, secondary and micro detail scales, the bump map's scale across */
+	float scales[4];
+	float emission[3];
+	/* the bump map's scale down */
+	float bump_scale_v;
+};
+
+void renderer_scene_begin_map(const struct xgpu_scene_begin_map *begin);
+void renderer_scene_piece(const struct xgpu_scene_piece *piece, const uint8_t *data, uint32_t size);
+void renderer_scene_camera(const struct xgpu_scene_camera *camera);
+/* the surfaces the game draws in the window */
+void renderer_scene_drawn(const uint32_t *surfaces, uint32_t count);
+/* their bits, by surface, for a trace (in an upload heap) */
+D3D12_GPU_VIRTUAL_ADDRESS renderer_scene_drawn_bits(void);
+/* the camera of the window being drawn (NULL before any) */
+const struct xgpu_scene_camera *renderer_scene_camera_get(void);
+/* the GPU's copies of the scene made, if they are to be; FALSE if there is
+nothing to trace */
+BOOL renderer_scene_prepare(void);
+/* the material of a geometry the GPU traces (by its index there) */
+uint32_t renderer_scene_geometry_material(uint32_t geometry);
+/* the material table for a trace (in an upload heap) */
+D3D12_GPU_VIRTUAL_ADDRESS renderer_scene_materials(void);
+void renderer_scene_buffers(D3D12_GPU_VIRTUAL_ADDRESS *top, D3D12_GPU_VIRTUAL_ADDRESS *vertices,
+	D3D12_GPU_VIRTUAL_ADDRESS *indices, D3D12_GPU_VIRTUAL_ADDRESS *geometries);
 
 #endif

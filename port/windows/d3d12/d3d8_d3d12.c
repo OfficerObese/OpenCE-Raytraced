@@ -38,6 +38,7 @@ there is a renderer texture here, by the same number.
 #include "xgpu_ring.h"
 #include "xgpu_host.h"
 #include "xgpu_gl_textures.h"
+#include "xgpu_scene.h"
 
 #include "zlib_prefixed.h"
 
@@ -337,9 +338,11 @@ struct d3d12_device
 	float query_area[VISIBILITY_TEST_SLOTS];
 	BOOL visibility_test_active;
 
-	/* the window's drawable size and vsync, as last sent */
+	/* the window's drawable size, vsync and path tracing, as last sent */
 	int sent_width, sent_height;
 	int sent_vsync;
+	int sent_path_tracing;
+	int sent_path_tracing_view;
 	/* the renderer's device_resets, as last seen */
 	unsigned long device_resets;
 
@@ -763,6 +766,9 @@ static void device_initialize(void)
 	maximum_target_size = header->maximum_texture_size;
 	device.constants_first = XGPU_VERTEX_CONSTANT_COUNT;
 	device.sent_vsync = -1;
+	device.sent_path_tracing = -1;
+	device.sent_path_tracing_view = -1;
+	xgpu_scene_setting(config_boolean("display.path_tracing"));
 	device.next_shader_number = 1;
 	device.ready = TRUE;
 	/* (at exit the renderer finishes the frames sent and writes their
@@ -3176,6 +3182,10 @@ void halo_screen_anti_alias(short x0, short y0, short x1, short y1)
 	struct xgpu_anti_alias anti_alias;
 	int mode = anti_aliasing();
 
+	/* (the 3D view is drawn: the path tracer's goes in before it is
+	antialiased) */
+	if (device.ready)
+		xgpu_scene_view_end();
 	if (!device.ready || (mode != _anti_aliasing_fxaa && mode != _anti_aliasing_smaa))
 		return;
 	target = render_target_get(&device.back_buffer);
@@ -3240,10 +3250,27 @@ static void key_screenshot(struct render_target_entry *target)
 	console_printf(FALSE, "Saved screenshot as %s", filename);
 }
 
-/* the window's size and vsync, sent when they change */
+/* debug.path_tracing_view, as an _xgpu_path_tracing_view */
+static int path_tracing_view_setting(void)
+{
+	static const char *const names[NUMBER_OF_XGPU_PATH_TRACING_VIEWS] = { "", "albedo", "normals", "depth_parity" };
+	const char *name = config_string("debug.path_tracing_view");
+	int view;
+
+	for (view = 0; view < NUMBER_OF_XGPU_PATH_TRACING_VIEWS; view++)
+	{
+		if (!strcmp(name, names[view]))
+			return view;
+	}
+	return _xgpu_path_tracing_view_none;
+}
+
+/* the window's size, vsync and path tracing, sent when they change */
 static void window_send(void)
 {
 	int width, height, vsync = config_boolean("display.vsync") ? 1 : 0;
+	int path_tracing = config_boolean("display.path_tracing") ? 1 : 0;
+	int path_tracing_view = path_tracing_view_setting();
 
 	platform_video_drawable_size(&width, &height);
 	if (width > 0 && height > 0 && (width != device.sent_width || height != device.sent_height))
@@ -3256,14 +3283,20 @@ static void window_send(void)
 		device.sent_width = width;
 		device.sent_height = height;
 	}
-	if (vsync != device.sent_vsync)
+	xgpu_scene_setting(path_tracing);
+	if (vsync != device.sent_vsync || path_tracing != device.sent_path_tracing ||
+		path_tracing_view != device.sent_path_tracing_view)
 	{
 		struct xgpu_configure configure;
 
 		memset(&configure, 0, sizeof(configure));
 		configure.vsync = (uint32_t)vsync;
+		configure.path_tracing = (uint32_t)path_tracing;
+		configure.path_tracing_view = (uint32_t)path_tracing_view;
 		xgpu_ring_send_data(_xgpu_op_configure, &configure, sizeof(configure), NULL, 0);
 		device.sent_vsync = vsync;
+		device.sent_path_tracing = path_tracing;
+		device.sent_path_tracing_view = path_tracing_view;
 	}
 }
 

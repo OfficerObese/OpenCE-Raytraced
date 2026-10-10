@@ -60,6 +60,11 @@ void renderer_draw_invalidate(void)
 	draw.constants_address = draw.uniforms_address = draw.lights_address = draw.attributes_address = 0;
 }
 
+const struct xgpu_draw_state *renderer_draw_state_current(void)
+{
+	return draw.have_state ? &draw.state : NULL;
+}
+
 void renderer_draw_begin_frame(void)
 {
 	renderer_draw_invalidate();

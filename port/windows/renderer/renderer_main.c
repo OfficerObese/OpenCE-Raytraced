@@ -113,6 +113,8 @@ static BOOL message_handle(uint32_t opcode, const uint8_t *data, uint32_t size)
 
 		EXACTLY(struct xgpu_configure);
 		renderer.vsync = configure->vsync != 0;
+		renderer_path_tracer_configure(configure->path_tracing != 0);
+		renderer_path_tracer_view(configure->path_tracing_view);
 		break;
 	}
 	case _xgpu_op_resize:
@@ -241,6 +243,34 @@ static BOOL message_handle(uint32_t opcode, const uint8_t *data, uint32_t size)
 		break;
 	case _xgpu_op_quit:
 		return FALSE;
+	case _xgpu_op_pass:
+		EXACTLY(struct xgpu_pass);
+		renderer_path_tracer_pass((const void *)data);
+		break;
+	case _xgpu_op_scene_begin_map:
+		EXACTLY(struct xgpu_scene_begin_map);
+		renderer_scene_begin_map((const void *)data);
+		break;
+	case _xgpu_op_scene_mesh:
+	case _xgpu_op_scene_materials:
+		NEEDS(struct xgpu_scene_piece);
+		renderer_scene_piece((const void *)data, data + sizeof(struct xgpu_scene_piece),
+			size - (uint32_t)sizeof(struct xgpu_scene_piece));
+		break;
+	case _xgpu_op_scene_drawn:
+	{
+		const struct xgpu_scene_drawn *drawn = (const void *)data;
+
+		NEEDS(struct xgpu_scene_drawn);
+		if ((uint64_t)drawn->count * sizeof(uint32_t) != size - sizeof(*drawn))
+			renderer_fail("%u surfaces drawn in %u bytes", drawn->count, size);
+		renderer_scene_drawn((const uint32_t *)(data + sizeof(*drawn)), drawn->count);
+		break;
+	}
+	case _xgpu_op_scene_camera:
+		EXACTLY(struct xgpu_scene_camera);
+		renderer_scene_camera((const void *)data);
+		break;
 	case _xgpu_op_debug_remove_device:
 		renderer_remove_device();
 		/* (found lost at once, rather than at the next wait) */
@@ -266,6 +296,8 @@ static void device_recover(void)
 	renderer_log("the GPU was lost (0x%08lX): making the device again", (unsigned long)renderer_lost_reason);
 	if (++recoveries_without_frame > 3)
 		renderer_fail("the GPU was lost again and again (0x%08lX)", (unsigned long)renderer_lost_reason);
+	renderer_path_tracer_lost();
+	renderer_scene_lost();
 	renderer_resources_lost();
 	renderer_post_lost();
 	renderer_output_lost();
@@ -276,6 +308,8 @@ static void device_recover(void)
 	renderer_pipeline_restore();
 	renderer_output_restore();
 	renderer_post_restore();
+	renderer_path_tracer_restore();
+	renderer_scene_restore();
 	renderer_draw_restore();
 	renderer_resources_restore();
 	renderer_wait(renderer_submit());
@@ -447,6 +481,7 @@ int main(int argc, char **argv)
 	renderer_pipeline_initialize();
 	renderer_draw_initialize();
 	renderer_output_initialize();
+	renderer_path_tracer_initialize();
 	renderer_header->maximum_samples = renderer.maximum_samples;
 	renderer_header->maximum_texture_size = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 	MemoryBarrier();

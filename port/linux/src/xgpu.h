@@ -197,6 +197,10 @@ unsigned long xgpu_texture_face_size(const struct xgpu_texture_description *desc
 unsigned long xgpu_texture_level_offset(const struct xgpu_texture_description *description, unsigned long level);
 unsigned long xgpu_texture_level_pitch(const struct xgpu_texture_description *description, unsigned long level);
 
+/* a GL texture of an Xbox texture header's texels as they are now, the
+caller's to delete (the cache does not keep it up to date), a palettized
+one's through palette; 0 if it cannot be made (palettized, without one) */
+GLuint xgpu_texture_copy(const DWORD *resource, const D3DCOLOR *palette, GLenum *target);
 /* the GL texture for an Xbox texture header, uploading or refreshing it
 from guest memory as needed; *target receives GL_TEXTURE_2D etc. */
 GLuint xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, GLenum *target,

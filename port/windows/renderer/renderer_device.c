@@ -193,6 +193,14 @@ void renderer_rtv_free(struct renderer_descriptor descriptor) { descriptor_free(
 struct renderer_descriptor renderer_dsv_allocate(void) { return descriptor_allocate(&dsv_pool); }
 void renderer_dsv_free(struct renderer_descriptor descriptor) { descriptor_free(&dsv_pool, descriptor); }
 
+D3D12_GPU_DESCRIPTOR_HANDLE renderer_view_gpu_start(void)
+{
+	D3D12_GPU_DESCRIPTOR_HANDLE handle;
+
+	ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(renderer.view_heap, &handle);
+	return handle;
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE renderer_sampler_cpu(uint32_t index)
 {
 	D3D12_CPU_DESCRIPTOR_HANDLE handle;

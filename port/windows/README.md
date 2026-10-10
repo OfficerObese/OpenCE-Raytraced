@@ -19,7 +19,10 @@ You do not need the Xbox SDK.
 
 - Visual Studio or the Visual Studio Build Tools, with the C++ workload.
   The build uses the 32-bit (x86) MSVC libraries for the game, the 64-bit
-  (x64) MSVC libraries for the renderer, and a Windows 10 or 11 SDK. It does not use the MSVC compiler.
+  (x64) MSVC libraries for the renderer, and a Windows 10 or 11 SDK. The
+  SDK's `dxc.exe` compiles the shaders of the path tracer (the environment
+  variable `HALO_DXC` can name another). Without it, the renderer is built
+  without the path tracer. It does not use the MSVC compiler.
 - LLVM (clang and lld), Python 3 and ninja in the `PATH`. For example,
   enter `scoop install llvm python ninja`.
 - A network connection for the first build. `configure.py` downloads the
@@ -154,6 +157,40 @@ When something goes wrong with the renderer:
 - **The renderer stops.** If the renderer exits, or draws no frame for 30
   seconds, the game shows the reason and stops.
 - **The renderer cannot start.** The game shows the reason and stops.
+
+### The path tracer
+
+The setting `display.path_tracing` (off by default) is to draw the 3D world
+with a path tracer instead: rays find what each pixel sees and the light
+that reaches it, from the sun, the sky, glowing surfaces and the lights of
+the game. The lightmaps that the Xbox game uses are not used. The path
+tracer is under construction. So far:
+
+- The renderer checks that the GPU can trace rays (DirectX Raytracing 1.1)
+  and that its ray tracing gives the right results, and writes the result
+  to its log.
+- When the level's structure (its BSP) changes, the game sends it to the
+  renderer: the surfaces in world space, their shaders and the bitmaps of
+  the shaders (`port/linux/game/path_tracing.c`, `d3d12/xgpu_scene.c`).
+  The lightmaps are not sent. The renderer keeps it
+  (`renderer/renderer_scene.c`) and builds its acceleration structures.
+- Each window sends its camera, and the game's passes send their
+  beginnings and ends. The renderer traces a ray from the camera through
+  each pixel, and `debug.path_tracing_view` shows what the rays find.
+  The objects are not traced yet.
+
+`python tools/test_path_tracing.py depth_parity --game <folder>` plays the
+level scenes with the `depth_parity` view and the D3D12 debug layer. In
+each scene, the surfaces that the rays find must be where the game draws
+its own on at least 99% of the pixels that can be compared. The pixels
+behind the game's objects and those of surfaces the game does not draw
+(its visibility culls some, and a mirror shows a reflection) are not
+compared. `a30` starts inside the lifeboat, an object: it passes when the
+objects are traced.
+
+The shaders of the path tracer (`renderer/shaders/*.hlsl`, Shader Model
+6.5) are compiled when the renderer is built, and are part of
+`halo_renderer.exe`.
 
 Three tests compare the renderer with the OpenGL build. They need the game
 data:

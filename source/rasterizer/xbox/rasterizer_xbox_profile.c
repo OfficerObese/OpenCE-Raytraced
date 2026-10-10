@@ -141,6 +141,7 @@ symbols in this file:
 #include <xtl.h>
 
 #include "rasterizer_xbox.h"
+#include "halo_path_tracing.h" /* port: port/linux/game/path_tracing.c */
 
 /* ---------- constants */
 
@@ -395,6 +396,8 @@ void rasterizer_profile_begin(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_profile.c",
 		259,
 		global_d3d_device);
+	/* port: the pass, for display.path_tracing */
+	path_tracing_pass(profile, TRUE);
 
 	if (rasterizer_profile_enabled() && rasterizer_profile_globals.window_index==0 && local_profile_enable==0)
 	{
@@ -431,6 +434,8 @@ void rasterizer_profile_end(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_profile.c",
 		294,
 		global_d3d_device);
+	/* port: the pass, for display.path_tracing */
+	path_tracing_pass(profile, FALSE);
 
 	if (rasterizer_profile_enabled() && rasterizer_profile_globals.window_index==0 && local_profile_enable==0)
 	{

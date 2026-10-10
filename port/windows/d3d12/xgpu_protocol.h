@@ -29,7 +29,7 @@ contiguous memory (d3d8_d3d12.c), numbered by their place in it.
 
 #include <stdint.h>
 
-#define XGPU_PROTOCOL_VERSION 2
+#define XGPU_PROTOCOL_VERSION 3
 
 #define XGPU_HEADER_SIZE 0x1000u
 #define XGPU_RESULTS_SIZE 0x10000u
@@ -94,7 +94,9 @@ struct xgpu_header
 	again after: the game signals the event only while it is set (a signal
 	for every message would be a system call for every draw) */
 	volatile uint32_t renderer_waiting;
-	uint32_t reserved[4];
+	/* the GPU can trace rays (DXR 1.1): display.path_tracing can be on */
+	uint32_t path_tracing_available;
+	uint32_t reserved[3];
 	char adapter_name[128];
 	char error[512];
 };
@@ -154,13 +156,25 @@ enum xgpu_opcode
 	/* no payload: the renderer removes its own device, a test of its recovery
 	(debug.scene_test_device_reset) */
 	_xgpu_op_debug_remove_device,
-	/* reserved for the path tracer: the scene in world space */
+	/* struct xgpu_pass: the game begins or ends one of its passes (its
+	rasterizer profiles, _rasterizer_profile_* in source/rasterizer/
+	rasterizer.h; XGPU_PASS_VIEW_END: the 3D view is drawn), sent only with
+	display.path_tracing on */
+	_xgpu_op_pass,
+	/* the path tracer's scene, in world space (renderer_scene.c):
+	struct xgpu_scene_begin_map, then its pieces */
 	_xgpu_op_scene_begin_map = 64,
+	/* struct xgpu_scene_piece and its records */
 	_xgpu_op_scene_mesh,
 	_xgpu_op_scene_instances,
+	/* struct xgpu_scene_camera, for each window */
 	_xgpu_op_scene_camera,
 	_xgpu_op_scene_lights,
+	/* struct xgpu_scene_piece and its struct xgpu_scene_material records */
 	_xgpu_op_scene_materials,
+	/* struct xgpu_scene_drawn and the structure BSP's surfaces the game draws
+	in the window (the depth parity view's: debug.path_tracing_view) */
+	_xgpu_op_scene_drawn,
 	NUMBER_OF_XGPU_OPCODES
 };
 
@@ -177,7 +191,23 @@ struct xgpu_configure
 {
 	uint32_t vsync;
 	uint32_t debug_layer;
-	uint32_t reserved[2];
+	/* display.path_tracing (renderer_path_tracer.c) */
+	uint32_t path_tracing;
+	/* debug.path_tracing_view: an _xgpu_path_tracing_view */
+	uint32_t path_tracing_view;
+};
+
+enum
+{
+	_xgpu_path_tracing_view_none = 0,
+	/* the surfaces' colour, unlit */
+	_xgpu_path_tracing_view_albedo,
+	/* their normals */
+	_xgpu_path_tracing_view_normals,
+	/* where the traced surfaces agree with the raster depth (green), are
+	behind it (blue), in front of it (red); counts in the log */
+	_xgpu_path_tracing_view_depth_parity,
+	NUMBER_OF_XGPU_PATH_TRACING_VIEWS
 };
 
 struct xgpu_resize
@@ -516,6 +546,150 @@ struct xgpu_screenshot
 	char path[XGPU_PATH_SIZE];
 };
 
+/* ---------- the path tracer's */
+
+/* the end of the 3D view, after the game's own passes */
+#define XGPU_PASS_VIEW_END 0x100u
+/* the game's passes the renderer acts on (_rasterizer_profile_*; the
+game's side checks these numbers: port/linux/game/path_tracing.c): the
+environment's lightmaps, the last pass the opaque world's depth is drawn in */
+#define XGPU_PASS_ENVIRONMENT_LIGHTMAPS 3u
+
+struct xgpu_pass
+{
+	uint32_t pass;
+	/* 1 begins, 0 ends */
+	uint32_t begin;
+};
+
+/* the scene of a map (its structure BSP), whose pieces follow; its counts
+are what they fill */
+struct xgpu_scene_begin_map
+{
+	uint32_t vertex_count;
+	uint32_t index_count;
+	uint32_t geometry_count;
+	uint32_t material_count;
+	/* the structure BSP's surfaces (the geometries' triangles are of them) */
+	uint32_t surface_count;
+	uint32_t reserved[3];
+};
+
+#define XGPU_SCENE_VERTEX_LIMIT (4u << 20)
+#define XGPU_SCENE_SURFACE_LIMIT (4u << 20)
+#define XGPU_SCENE_INDEX_LIMIT (12u << 20)
+#define XGPU_SCENE_GEOMETRY_LIMIT 0x10000u
+#define XGPU_SCENE_MATERIAL_LIMIT 0x10000u
+
+enum
+{
+	/* struct xgpu_scene_vertex records */
+	_xgpu_scene_piece_vertices,
+	/* uint32_t indices, three a triangle, of the geometry's own vertices */
+	_xgpu_scene_piece_indices,
+	/* struct xgpu_scene_geometry records */
+	_xgpu_scene_piece_geometries,
+	/* struct xgpu_scene_material records */
+	_xgpu_scene_piece_materials,
+};
+
+struct xgpu_scene_piece
+{
+	uint32_t kind;
+	/* the first record it fills, and how many follow */
+	uint32_t first;
+	uint32_t count;
+	uint32_t reserved;
+};
+
+struct xgpu_scene_vertex
+{
+	float position[3];
+	float normal[3];
+	float binormal[3];
+	float tangent[3];
+	float texcoord[2];
+};
+
+/* triangles of one material: index_count indices from first_index, of
+vertex_count vertices from first_vertex */
+struct xgpu_scene_geometry
+{
+	uint32_t material;
+	uint32_t first_vertex;
+	uint32_t vertex_count;
+	uint32_t first_index;
+	uint32_t index_count;
+	/* the structure BSP's surface its first triangle is (the others follow) */
+	uint32_t first_surface;
+	uint32_t reserved[2];
+};
+
+enum
+{
+	/* a shader_environment */
+	_xgpu_scene_material_environment = 1,
+};
+
+enum
+{
+	/* the bump map's texels whose alpha is below half are holes (as the
+	game's alpha test of an environment shader) */
+	_xgpu_scene_material_alpha_tested_bit = 0,
+	/* the game draws the scene mirrored in it */
+	_xgpu_scene_material_mirror_bit,
+};
+
+/* textures are renderer texture numbers (0: none), defined by the game
+as its others are, and owned by the scene */
+struct xgpu_scene_material
+{
+	uint32_t type;
+	uint32_t flags;
+	uint32_t base_map;
+	uint32_t primary_detail_map;
+	uint32_t secondary_detail_map;
+	uint32_t micro_detail_map;
+	uint32_t bump_map;
+	/* the shader's detail_map_function and micro_detail_map_function: 0
+	double/biased multiply, 1 multiply, 2 double/biased add */
+	uint32_t detail_function;
+	uint32_t micro_detail_function;
+	/* the shader_environment's type: 0 normal, 1 blended, 2 blended base
+	specular */
+	uint32_t environment_type;
+	float primary_detail_scale;
+	float secondary_detail_scale;
+	float micro_detail_scale;
+	/* the bump map's texture coordinates' scale, each way */
+	float bump_scale[2];
+	/* light the surface gives off (its radiosity power times its colour),
+	and the colour of light passing through it */
+	float emission[3];
+	float tint[3];
+};
+
+struct xgpu_scene_drawn
+{
+	uint32_t count;
+	uint32_t reserved[3];
+};
+
+struct xgpu_scene_camera
+{
+	/* world to clip space, as the game's vertex shaders take it (rows are
+	the clip coordinates; rasterizer_set_frustum_z), and its point */
+	float world_to_clip[4][4];
+	float position[3];
+	/* drawn to the screen (0: a mirror's reflection, into a texture of its
+	own, which the path tracer has no need of) */
+	uint32_t primary;
+	/* the window's 3D view in the game's pixels (left, top, right, bottom),
+	whose centres are at whole pixels, as Direct3D 8 has them: half a pixel
+	from Direct3D 12's */
+	float game_viewport[4];
+};
+
 _Static_assert(sizeof(struct xgpu_header) <= XGPU_HEADER_SIZE, "the header fits its page");
 _Static_assert(sizeof(struct xgpu_results) <= XGPU_RESULTS_SIZE, "the results fit their area");
 _Static_assert(sizeof(struct xgpu_message_header) == XGPU_MESSAGE_ALIGNMENT, "message header");
@@ -527,5 +701,8 @@ _Static_assert(sizeof(struct xgpu_draw_state) % 4 == 0, "draw state");
 _Static_assert(sizeof(struct xgpu_draw) % 16 == 0, "draw: its inline data follow it aligned");
 _Static_assert(sizeof(struct xgpu_clear) % 16 == 0, "clear");
 _Static_assert(sizeof(struct xgpu_screenshot) % 4 == 0, "screenshot");
+_Static_assert(sizeof(struct xgpu_scene_vertex) == 56, "scene vertex");
+_Static_assert(sizeof(struct xgpu_scene_geometry) == 32, "scene geometry");
+_Static_assert(sizeof(struct xgpu_scene_material) == 84, "scene material");
 
 #endif

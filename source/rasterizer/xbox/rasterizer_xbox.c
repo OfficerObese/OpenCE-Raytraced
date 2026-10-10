@@ -419,6 +419,7 @@ symbols in this file:
 #include "rasterizer/xbox/rasterizer_xbox_pixel_shader.h"
 #include "rasterizer_xbox_internal.h"
 #include "rasterizer_xbox_vertex_shaders.h"
+#include "halo_path_tracing.h" /* port: port/linux/game/path_tracing.c */
 
 /* ---------- constants */
 
@@ -1780,6 +1781,8 @@ void _rasterizer_window_begin(
 		system_exit(-1);
 	}
 	rasterizer_set_frustum_z(-1.0f, -1.0f);
+	/* port: the window's camera for display.path_tracing */
+	path_tracing_window_begin(&global_window_parameters);
 	D3DDevice_SetRenderState(
 		D3DRS_FILLMODE,
 		rasterizer_debug_options.wireframe_enabled ? D3DFILL_WIREFRAME : D3DFILL_SOLID);

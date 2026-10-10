@@ -165,6 +165,11 @@ static const struct config_setting config_settings[] =
 		"pixel by the lights the game gives them, without the facets the light\n"
 		"of each vertex shows across curved surfaces; false lights each vertex,\n"
 		"as the Xbox does." },
+	{ "display.path_tracing", _config_boolean, "false", "HALO_PATH_TRACING", _environment_value, _platform_windows,
+		"The Direct3D 12 renderer draws the 3D world with a path tracer, lit only\n"
+		"by its own light (no lightmaps); needs a GPU that traces rays (DXR 1.1)\n"
+		"(port/windows/README.md). Under construction: so far it traces the\n"
+		"level's structure for debug.path_tracing_view only." },
 
 	{ "audio.enabled", _config_boolean, "true", "HALO_NO_AUDIO", _environment_set_is_false, _platform_all,
 		"Play sound." },
@@ -535,6 +540,13 @@ static const struct config_setting config_settings[] =
 		"Renderer comparison scenes (port/linux/game/scene_test.c): skip each\n"
 		"cinematic, and this many ticks after the player has control save a\n"
 		"screenshot and exit, ignoring the mouse, keyboard and gamepads; 0 off." },
+	{ "debug.path_tracing_view", _config_string, "\"\"", "HALO_PATH_TRACING_VIEW", _environment_value,
+		_platform_windows,
+		"With display.path_tracing, what the path tracer sees, drawn over the 3D\n"
+		"view: \"albedo\" (the surfaces' colours, unlit), \"normals\", or\n"
+		"\"depth_parity\" (green where its surfaces are where the game's are,\n"
+		"blue behind them, red in front, cyan where the game did not draw the\n"
+		"surface; counts in the renderer's log); \"\" none." },
 	{ "debug.scene_test_device_reset", _config_integer, "0", "HALO_SCENE_TEST_DEVICE_RESET", _environment_value,
 		_platform_windows,
 		"With debug.scene_test, this many ticks after the player has control the\n"
